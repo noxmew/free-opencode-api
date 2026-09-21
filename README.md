@@ -12,12 +12,10 @@
 - 支持配置上游 HTTP/HTTPS 代理；
 - 按 OpenCode 规则生成或透传每次请求所需的 session、request、client、project 和 User-Agent 请求头；
 - 支持 OpenAI SDK、curl 以及其他兼容客户端；
-- 通过 API Key 控制服务访问。
 
 ## 本地运行
 
 ```bash
-export SERVICE_API_KEY=change-me
 go run ./cmd/server
 ```
 
@@ -25,7 +23,6 @@ go run ./cmd/server
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer $SERVICE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mimo-v2.5-free",
@@ -40,7 +37,6 @@ curl http://localhost:8080/v1/chat/completions \
 ```bash
 curl -fsSL https://raw.githubusercontent.com/noxmew/free-opencode-api/main/docker-compose.yml -o docker-compose.yml
 curl -fsSL https://raw.githubusercontent.com/noxmew/free-opencode-api/main/.env.example -o .env
-# 修改 .env 中的 SERVICE_API_KEY
 docker compose pull
 docker compose up -d
 ```

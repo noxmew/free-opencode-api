@@ -14,8 +14,6 @@ import (
 func TestHeadersUseClientProvidedOpenCodeIDs(t *testing.T) {
 	client, err := New(config.Config{
 		UpstreamBaseURL:   "https://example.com/zen/v1",
-		ClientVersion:     "0.1.0",
-		UpstreamUserAgent: "opencode/0.1.0",
 		OpenCodeProjectID: "prj_test",
 	})
 	if err != nil {
@@ -34,7 +32,7 @@ func TestHeadersUseClientProvidedOpenCodeIDs(t *testing.T) {
 	checks := map[string]string{
 		"Content-Type":       "application/json",
 		"Accept":             "text/event-stream",
-		"User-Agent":         "opencode/0.1.0",
+		"User-Agent":         "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
 		"x-opencode-client":  "cli",
 		"x-opencode-project": "prj_test",
 		"x-opencode-session": "ses_client-provided",
@@ -53,7 +51,6 @@ func TestHeadersUseClientProvidedOpenCodeIDs(t *testing.T) {
 func TestHeadersDoNotReuseIDsAcrossCalls(t *testing.T) {
 	client, err := New(config.Config{
 		UpstreamBaseURL: "https://example.com/zen/v1",
-		ClientVersion:   "0.1.0",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +69,6 @@ func TestHeadersDoNotReuseIDsAcrossCalls(t *testing.T) {
 func TestHeadersGenerateOpenCodeIDs(t *testing.T) {
 	client, err := New(config.Config{
 		UpstreamBaseURL: "https://example.com/zen/v1",
-		ClientVersion:   "0.1.0",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +132,6 @@ func TestPrepareOpenCodeBodyKeepsClientFieldsAndAddsCompatibilityFields(t *testi
 func TestOpenCodeHeadersUseCurrentClientShape(t *testing.T) {
 	client, err := New(config.Config{
 		UpstreamBaseURL: "https://opencode.ai/zen/v1",
-		ClientVersion:   "1.18.31",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +169,6 @@ func TestConfiguredProxyReceivesUpstreamRequest(t *testing.T) {
 	client, err := New(config.Config{
 		UpstreamBaseURL: "http://upstream.invalid/v1",
 		UpstreamProxy:   proxy.URL,
-		ClientVersion:   "0.1.0",
 	})
 	if err != nil {
 		t.Fatal(err)

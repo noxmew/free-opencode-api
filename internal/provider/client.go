@@ -37,24 +37,12 @@ type HeaderInput struct {
 
 const openCodeClientName = "cli"
 
-const (
-	openCodeProviderUtilsVersion = "4.0.23"
-	openCodeRuntimeVersion       = "1.3.14"
-)
+const openCodeUserAgent = "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
 
 func New(cfg config.Config) (*Client, error) {
 	httpClient, err := newHTTPClient(cfg.UpstreamProxy)
 	if err != nil {
 		return nil, err
-	}
-	userAgent := cfg.UpstreamUserAgent
-	if userAgent == "" {
-		userAgent = fmt.Sprintf(
-			"opencode/%s ai-sdk/provider-utils/%s runtime/bun/%s",
-			cfg.ClientVersion,
-			openCodeProviderUtilsVersion,
-			openCodeRuntimeVersion,
-		)
 	}
 	projectID := cfg.OpenCodeProjectID
 	if projectID == "" {
@@ -66,7 +54,7 @@ func New(cfg config.Config) (*Client, error) {
 		modelsEndpoint: baseURL + "/models",
 		http:           httpClient,
 		identity: HeaderIdentity{
-			UserAgent:         userAgent,
+			UserAgent:         openCodeUserAgent,
 			OpenCodeProjectID: projectID,
 		},
 		openCodeZen: isOpenCodeZenURL(cfg.UpstreamBaseURL),

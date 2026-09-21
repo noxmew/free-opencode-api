@@ -55,7 +55,6 @@ func TestChatCompletionForwardsOpenCodeHeaders(t *testing.T) {
         "user":"conversation-one",
         "messages":[{"role":"user","content":"hello"}]
     }`))
-	request.Header.Set("Authorization", "Bearer service-secret")
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("x-opencode-session", "ses_from_opencode")
 	request.Header.Set("x-opencode-request", "msg_from_opencode")
@@ -186,24 +185,6 @@ func TestChatCompletionAggregatesUpstreamSSEForNonStreamingClient(t *testing.T) 
 	}
 }
 
-func TestAuthentication(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("upstream should not be called")
-	}))
-	defer upstream.Close()
-	server := newTestServer(t, upstream.URL+"/v1")
-
-	unauthorized := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-        "model":"any-model",
-        "messages":[{"role":"user","content":"hello"}]
-    }`))
-	unauthorizedResponse := httptest.NewRecorder()
-	server.Handler().ServeHTTP(unauthorizedResponse, unauthorized)
-	if unauthorizedResponse.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthorized status = %d", unauthorizedResponse.Code)
-	}
-}
-
 func TestModelsProxyUpstream(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
@@ -219,7 +200,6 @@ func TestModelsProxyUpstream(t *testing.T) {
 	server := newTestServer(t, upstream.URL+"/v1")
 
 	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	request.Header.Set("Authorization", "Bearer service-secret")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 
@@ -234,12 +214,8 @@ func TestModelsProxyUpstream(t *testing.T) {
 func newTestServer(t *testing.T, upstreamBaseURL string) *Server {
 	t.Helper()
 	cfg := config.Config{
-		ServiceAPIKey:     "service-secret",
-		UpstreamBaseURL:   upstreamBaseURL,
-		RequestTimeout:    time.Second,
-		MaxBodyBytes:      1 << 20,
-		ClientVersion:     "0.1.0",
-		UpstreamUserAgent: "opencode/0.1.0",
+		UpstreamBaseURL: upstreamBaseURL,
+		RequestTimeout:  time.Second,
 	}
 	upstream, err := provider.New(cfg)
 	if err != nil {
