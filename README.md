@@ -2,11 +2,9 @@
 
 用 Go 实现的轻量 API Gateway，参考
 [anomalyco/opencode](https://github.com/anomalyco/opencode) 的 provider 设计，
-将经过配置的免费模型以 OpenAI 兼容接口对外提供。
+将 OpenCode Zen 的模型以 OpenAI 兼容接口对外提供。
 
-> 当前已实现 MVP 核心服务，正在继续完善部署与运营能力。
-
-## 目标
+## 支持
 
 - 提供 `GET /v1/models`；
 - 提供 `POST /v1/chat/completions`；
@@ -16,9 +14,7 @@
 - 支持 OpenAI SDK、curl 以及其他兼容客户端；
 - 通过 API Key 控制服务访问。
 
-这里的“免费”依赖上游模型的免费额度或零成本政策。
-
-## 目标使用方式
+## 本地运行
 
 ```bash
 export SERVICE_API_KEY=change-me
@@ -32,20 +28,12 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $SERVICE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "your-free-model",
+    "model": "mimo-v2.5-free",
     "messages": [{"role": "user", "content": "你好"}]
   }'
 ```
 
 ## Docker 部署
-
-GitHub Actions 会将镜像发布到：
-
-```text
-ghcr.io/noxmew/free-opencode-api:latest
-```
-
-首次发布后，需要在 GitHub Packages 中将该 Container package 设置为 Public；如果保持私有，部署机器需要先执行 `docker login ghcr.io`。
 
 一键部署：
 
