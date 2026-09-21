@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -280,8 +281,18 @@ func cleanHeaderValue(value string) string {
 }
 
 func newHTTPClient() (*http.Client, error) {
+	proxy := func(_ *http.Request) (*url.URL, error) {
+		return nil, nil
+	}
+	if proxyRaw := strings.TrimSpace(os.Getenv("HTTP_PROXY")); proxyRaw != "" {
+		proxyURL, err := url.Parse(proxyRaw)
+		if err != nil || proxyURL.Host == "" || (proxyURL.Scheme != "http" && proxyURL.Scheme != "https") {
+			return nil, fmt.Errorf("HTTP_PROXY must be an http or https URL")
+		}
+		proxy = http.ProxyURL(proxyURL)
+	}
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 proxy,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   20,
