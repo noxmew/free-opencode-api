@@ -1,18 +1,5 @@
 # Free OpenCode API
 
-用 Go 实现的轻量 API Gateway，参考
-[anomalyco/opencode](https://github.com/anomalyco/opencode) 的 provider 设计，
-将 OpenCode Zen 的模型以 OpenAI 兼容接口对外提供。
-
-## 支持
-
-- 提供 `GET /v1/models`；
-- 提供 `POST /v1/chat/completions`；
-- 支持普通 JSON 和 SSE 流式响应；
-- 支持配置上游 HTTP/HTTPS 代理；
-- 按 OpenCode 规则生成或透传每次请求所需的 session、request、client、project 和 User-Agent 请求头；
-- 支持 OpenAI SDK、curl 以及其他兼容客户端；
-
 ## 本地运行
 
 ```bash
