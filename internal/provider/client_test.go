@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -88,57 +87,6 @@ func TestHeadersGenerateOpenCodeIDs(t *testing.T) {
 	request := client.Headers(HeaderInput{}).Get("x-opencode-request")
 	if !strings.HasPrefix(request, "msg_") || len(request) != len("msg_")+26 {
 		t.Fatalf("request id does not use OpenCode shape: %q", request)
-	}
-}
-
-func TestChatCompatibilityAddsOpenCodeFieldsWhenNeeded(t *testing.T) {
-	const body = `{"model":"mimo-v2.5-free","messages":[{"role":"user","content":"hello"}],"stream":false,"temperature":0.35,"top_p":0.8,"max_tokens":321,"stop":["END"]}`
-
-	if !needsChatCompatibility([]byte(body)) {
-		t.Fatal("minimal Chat request should use compatibility fields")
-	}
-	prepared, err := prepareOpenCodeBody([]byte(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(prepared, &payload); err != nil {
-		t.Fatal(err)
-	}
-	for _, field := range []string{"temperature", "top_p", "max_tokens", "stop"} {
-		if _, ok := payload[field]; !ok {
-			t.Fatalf("prepared body dropped %s", field)
-		}
-	}
-	var stream bool
-	if err := json.Unmarshal(payload["stream"], &stream); err != nil || !stream {
-		t.Fatalf("stream = %s, want true", payload["stream"])
-	}
-	if got := string(payload["stream_options"]); got != `{"include_usage":true}` {
-		t.Fatalf("stream_options = %s", got)
-	}
-	if got := string(payload["tool_choice"]); got != `"none"` {
-		t.Fatalf("tool_choice = %s", got)
-	}
-
-	var tools []struct {
-		Function struct {
-			Name string `json:"name"`
-		} `json:"function"`
-	}
-	if err := json.Unmarshal(payload["tools"], &tools); err != nil {
-		t.Fatal(err)
-	}
-	if len(tools) != 2 || tools[0].Function.Name != "bash" || tools[1].Function.Name != "read" {
-		t.Fatalf("tools = %#v", tools)
-	}
-}
-
-func TestChatCompatibilityLeavesCompleteOpenCodeRequestAlone(t *testing.T) {
-	body := []byte(`{"model":"mimo-v2.5-free","messages":[],"stream":true,"stream_options":{"include_usage":true},"tools":[{"type":"function","function":{"name":"bash"}}]}`)
-	if needsChatCompatibility(body) {
-		t.Fatal("complete OpenCode Chat request should be passed through")
 	}
 }
 

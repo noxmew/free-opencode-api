@@ -74,6 +74,65 @@ func TestChatCompletionForwardsOpenCodeHeaders(t *testing.T) {
 	}
 }
 
+func TestMimoChatZenGatewayFlow(t *testing.T) {
+	const requestBody = `{"model":"mimo-v2.5-free","messages":[{"role":"user","content":"Reply exactly: chat-ok"}]}`
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/zen/v1/chat/completions" {
+			t.Errorf("upstream path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer public" {
+			t.Errorf("authorization = %q", got)
+		}
+		if got := r.Header.Get("Accept"); got != "*/*" {
+			t.Errorf("accept = %q", got)
+		}
+		if got := r.Header.Get("User-Agent"); got != "opencode/1.18.31 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14" {
+			t.Errorf("user-agent = %q", got)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		var payload struct {
+			Model         string            `json:"model"`
+			Stream        bool              `json:"stream"`
+			StreamOptions map[string]any    `json:"stream_options"`
+			Tools         []json.RawMessage `json:"tools"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Errorf("invalid upstream body: %v", err)
+		}
+		if payload.Model != "mimo-v2.5-free" || !payload.Stream || len(payload.Tools) != 2 || payload.StreamOptions["include_usage"] != true {
+			t.Errorf("compatibility body = %s", body)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl_mimo\",\"created\":1,\"model\":\"mimo-v2.5-free\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"chat-ok\"},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl_mimo\",\"created\":1,\"model\":\"mimo-v2.5-free\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	t.Setenv("HTTP_PROXY", upstream.URL)
+
+	server := newTestServer(t, "http://opencode.ai/zen/v1")
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(requestBody))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("User-Agent", "curl/8.0")
+	response := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"content":"chat-ok"`) {
+		t.Fatalf("response body = %s", response.Body.String())
+	}
+}
+
 func TestResponsesProxyRequestAndResponseVerbatim(t *testing.T) {
 	const requestBody = `{"model":"free-model","input":"hello","metadata":{"trace":"test"}}`
 	const responseBody = `{"id":"resp_test","object":"response","status":"completed","output":[]}`
