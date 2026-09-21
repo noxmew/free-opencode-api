@@ -74,6 +74,77 @@ func TestChatCompletionForwardsOpenCodeHeaders(t *testing.T) {
 	}
 }
 
+func TestResponsesProxyRequestAndResponseVerbatim(t *testing.T) {
+	const requestBody = `{"model":"free-model","input":"hello","metadata":{"trace":"test"}}`
+	const responseBody = `{"id":"resp_test","object":"response","status":"completed","output":[]}`
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			t.Errorf("upstream request = %s %s", r.Method, r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		if string(body) != requestBody {
+			t.Errorf("upstream body was rewritten: got %s, want %s", body, requestBody)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer public" {
+			t.Errorf("authorization = %q", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("content type = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(responseBody))
+	}))
+	defer upstream.Close()
+
+	server := newTestServer(t, upstream.URL+"/v1")
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(requestBody))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if response.Body.String() != responseBody {
+		t.Fatalf("response body was rewritten: got %s, want %s", response.Body.String(), responseBody)
+	}
+}
+
+func TestResponsesStreamsSSEVerbatim(t *testing.T) {
+	const responseBody = "event: response.created\ndata: {\"type\":\"response.created\"}\n\n"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Accept"); got != "text/event-stream" {
+			t.Errorf("accept = %q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, responseBody)
+	}))
+	defer upstream.Close()
+
+	server := newTestServer(t, upstream.URL+"/v1")
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"free-model","input":"hello","stream":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("content type = %q", got)
+	}
+	if response.Body.String() != responseBody {
+		t.Fatalf("response body was rewritten: got %q, want %q", response.Body.String(), responseBody)
+	}
+}
+
 func TestOptionalServiceAPIKey(t *testing.T) {
 	server := &Server{cfg: config.Config{}}
 	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)

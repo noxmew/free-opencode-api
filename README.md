@@ -6,7 +6,7 @@
 go run ./cmd/server
 ```
 
-调用接口：
+## Chat Completions API
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
@@ -14,6 +14,17 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{
     "model": "mimo-v2.5-free",
     "messages": [{"role": "user", "content": "你好"}]
+  }'
+```
+
+## Responses API
+
+```bash
+curl http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "muse-spark-1.3-contributor-free",
+    "input": "你好"
   }'
 ```
 
@@ -30,4 +41,3 @@ docker compose up -d
 
 - [OpenCode](https://github.com/anomalyco/opencode)
 - [OpenCode Zen 文档](https://opencode.ai/docs/zen)
-- [OpenAI Chat Completions API](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create/)

@@ -63,6 +63,7 @@ func New(cfg config.Config, upstream *provider.Client, logger *slog.Logger) *Ser
 	s.mux.HandleFunc("GET /healthz", s.healthz)
 	s.mux.HandleFunc("GET /v1/models", s.models)
 	s.mux.HandleFunc("POST /v1/chat/completions", s.chatCompletions)
+	s.mux.HandleFunc("POST /v1/responses", s.responses)
 	return s
 }
 
@@ -142,6 +143,54 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	s.writeUpstreamResponse(w, response, parsed.Stream)
 }
 
+func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r) {
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "request body is unreadable", "invalid_request_error", "invalid_body", "")
+		return
+	}
+
+	// Responses requests are deliberately passed through unchanged. We only
+	// inspect stream to choose the upstream Accept header and forwarding mode;
+	// the original bytes are always sent to the provider.
+	stream := responseRequestStream(body)
+	requestID := w.Header().Get("X-Request-ID")
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
+	defer cancel()
+	response, err := s.upstream.DoResponses(ctx, body, provider.HeaderInput{
+		Inbound: r.Header,
+		Stream:  stream,
+	})
+	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			writeAPIError(w, http.StatusGatewayTimeout, "upstream request timed out", "timeout_error", "upstream_timeout", "")
+			return
+		}
+		s.logger.Error("upstream responses request failed", "request_id", requestID, "error", err)
+		writeAPIError(w, http.StatusBadGateway, "upstream request failed", "upstream_error", "upstream_request_failed", "")
+		return
+	}
+	defer response.Body.Close()
+
+	s.writePassthroughResponse(w, response, stream)
+}
+
+func responseRequestStream(body []byte) bool {
+	var request struct {
+		Stream bool `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		return false
+	}
+	return request.Stream
+}
+
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) bool {
 	if s.cfg.ServiceAPIKey == "" {
 		return true
@@ -203,6 +252,41 @@ func (s *Server) writeUpstreamResponse(w http.ResponseWriter, response *http.Res
 		}
 	}
 	_, _ = io.Copy(w, response.Body)
+}
+
+func (s *Server) writePassthroughResponse(w http.ResponseWriter, response *http.Response, stream bool) {
+	copyResponseHeaders(w, response.Header)
+	if stream {
+		if w.Header().Get("Content-Type") == "" {
+			w.Header().Set("Content-Type", "text/event-stream")
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Accel-Buffering", "no")
+	}
+	w.WriteHeader(response.StatusCode)
+
+	if !stream {
+		_, _ = io.Copy(w, response.Body)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return
+	}
+	buffer := make([]byte, 32*1024)
+	for {
+		count, err := response.Body.Read(buffer)
+		if count > 0 {
+			if _, writeErr := w.Write(buffer[:count]); writeErr != nil {
+				return
+			}
+			flusher.Flush()
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 func isEventStream(contentType string) bool {

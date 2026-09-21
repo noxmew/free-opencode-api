@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,11 +18,11 @@ import (
 )
 
 type Client struct {
-	endpoint       string
-	modelsEndpoint string
-	http           *http.Client
-	identity       HeaderIdentity
-	openCodeZen    bool
+	endpoint          string
+	responsesEndpoint string
+	modelsEndpoint    string
+	http              *http.Client
+	identity          HeaderIdentity
 }
 
 type HeaderIdentity struct {
@@ -38,27 +37,23 @@ type HeaderInput struct {
 
 const openCodeClientName = "cli"
 
-const openCodeUserAgent = "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
+const openCodeUserAgent = "opencode/1.18.31 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14"
 
 func New(cfg config.Config) (*Client, error) {
 	httpClient, err := newHTTPClient()
 	if err != nil {
 		return nil, err
 	}
-	projectID := cfg.OpenCodeProjectID
-	if projectID == "" {
-		projectID = "global"
-	}
 	baseURL := strings.TrimRight(cfg.UpstreamBaseURL, "/")
 	return &Client{
-		endpoint:       baseURL + "/chat/completions",
-		modelsEndpoint: baseURL + "/models",
-		http:           httpClient,
+		endpoint:          baseURL + "/chat/completions",
+		responsesEndpoint: baseURL + "/responses",
+		modelsEndpoint:    baseURL + "/models",
+		http:              httpClient,
 		identity: HeaderIdentity{
 			UserAgent:         openCodeUserAgent,
-			OpenCodeProjectID: projectID,
+			OpenCodeProjectID: strings.TrimSpace(cfg.OpenCodeProjectID),
 		},
-		openCodeZen: isOpenCodeZenURL(cfg.UpstreamBaseURL),
 	}, nil
 }
 
@@ -75,14 +70,18 @@ func (c *Client) DoModels(ctx context.Context, input HeaderInput) (*http.Respons
 }
 
 func (c *Client) DoChat(ctx context.Context, body []byte, input HeaderInput) (*http.Response, error) {
-	if c.openCodeZen {
-		var err error
-		body, err = prepareOpenCodeBody(body)
-		if err != nil {
-			return nil, err
-		}
-	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Close = true
+	request.Header = c.Headers(input)
+	request.Header.Set("Authorization", "Bearer public")
+	return c.http.Do(request)
+}
+
+func (c *Client) DoResponses(ctx context.Context, body []byte, input HeaderInput) (*http.Response, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.responsesEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -94,109 +93,66 @@ func (c *Client) DoChat(ctx context.Context, body []byte, input HeaderInput) (*h
 
 func (c *Client) Headers(input HeaderInput) http.Header {
 	headers := make(http.Header)
-	headers.Set("Content-Type", "application/json")
-	if c.openCodeZen {
-		headers.Set("Accept", "*/*")
-	} else if input.Stream {
-		headers.Set("Accept", "text/event-stream")
-	} else {
-		headers.Set("Accept", "application/json")
-	}
-	headers.Set("User-Agent", c.identity.UserAgent)
-	headers.Set("x-opencode-client", openCodeClientName)
-	// Preserve IDs supplied by OpenCode clients. This is needed when the
-	// gateway is used directly from the OpenCode client. For ordinary OpenAI
-	// clients, generate IDs for this request when they are absent.
-	headers.Set("x-opencode-session", sessionID(input))
-	headers.Set("x-opencode-request", requestID(input))
-	if value := cleanHeaderValue(input.Inbound.Get("x-parent-session-id")); value != "" {
-		headers.Set("x-parent-session-id", value)
+	for name, values := range input.Inbound {
+		if isHopByHopHeader(name) {
+			continue
+		}
+		for _, value := range values {
+			headers.Add(name, value)
+		}
 	}
 
-	projectID := c.identity.OpenCodeProjectID
+	if headers.Get("Content-Type") == "" {
+		headers.Set("Content-Type", "application/json")
+	}
+	if headers.Get("Accept") == "" {
+		if input.Stream {
+			headers.Set("Accept", "text/event-stream")
+		} else {
+			headers.Set("Accept", "application/json")
+		}
+	}
+	if headers.Get("User-Agent") == "" {
+		headers.Set("User-Agent", c.identity.UserAgent)
+	}
+	if headers.Get("x-opencode-client") == "" {
+		headers.Set("x-opencode-client", openCodeClientName)
+	}
+
+	if value := cleanHeaderValue(headers.Get("x-opencode-session")); value != "" {
+		headers.Set("x-opencode-session", value)
+	} else if value := cleanHeaderValue(headers.Get("x-session-id")); value != "" {
+		headers.Set("x-opencode-session", value)
+	} else {
+		headers.Set("x-opencode-session", sessionID(input))
+	}
+	if value := cleanHeaderValue(headers.Get("x-opencode-request")); value != "" {
+		headers.Set("x-opencode-request", value)
+	} else {
+		headers.Set("x-opencode-request", requestID(input))
+	}
+
+	projectID := cleanHeaderValue(headers.Get("x-opencode-project"))
+	if projectID == "" {
+		projectID = cleanHeaderValue(c.identity.OpenCodeProjectID)
+	}
 	if projectID != "" {
 		headers.Set("x-opencode-project", projectID)
 	}
+
+	// The gateway's public upstream credential is independent from the
+	// optional credential used to authorize requests to the gateway itself.
+	headers.Set("Authorization", "Bearer public")
 	return headers
 }
 
-func isOpenCodeZenURL(raw string) bool {
-	parsed, err := url.Parse(raw)
-	if err != nil {
+func isHopByHopHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "connection", "content-length", "host", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade":
+		return true
+	default:
 		return false
 	}
-	return strings.EqualFold(parsed.Hostname(), "opencode.ai") &&
-		strings.HasPrefix(strings.TrimRight(parsed.Path, "/"), "/zen/")
-}
-
-func prepareOpenCodeBody(body []byte) ([]byte, error) {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	var raw map[string]json.RawMessage
-	if err := decoder.Decode(&raw); err != nil || raw == nil {
-		return nil, fmt.Errorf("upstream body must be a JSON object")
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		return nil, fmt.Errorf("upstream body must contain one JSON value")
-	}
-
-	raw["stream"] = json.RawMessage("true")
-	if _, ok := raw["stream_options"]; !ok {
-		raw["stream_options"] = json.RawMessage(`{"include_usage":true}`)
-	}
-
-	if !hasTools(raw["tools"]) {
-		raw["tools"] = mustJSON(openCodeToolMarkers())
-		if _, ok := raw["tool_choice"]; !ok {
-			raw["tool_choice"] = json.RawMessage(`"none"`)
-		}
-	}
-	return json.Marshal(raw)
-}
-
-func hasTools(raw json.RawMessage) bool {
-	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return false
-	}
-	var tools []json.RawMessage
-	return json.Unmarshal(raw, &tools) == nil && len(tools) > 0
-}
-
-func openCodeToolMarkers() []map[string]any {
-	return []map[string]any{
-		{
-			"type": "function",
-			"function": map[string]any{
-				"name":        "bash",
-				"description": "OpenCode bash tool",
-				"parameters": map[string]any{
-					"type":                 "object",
-					"properties":           map[string]any{},
-					"additionalProperties": false,
-				},
-			},
-		},
-		{
-			"type": "function",
-			"function": map[string]any{
-				"name":        "read",
-				"description": "OpenCode read tool",
-				"parameters": map[string]any{
-					"type":                 "object",
-					"properties":           map[string]any{},
-					"additionalProperties": false,
-				},
-			},
-		},
-	}
-}
-
-func mustJSON(value any) json.RawMessage {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	return encoded
 }
 
 func sessionID(input HeaderInput) string {

@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -35,7 +34,7 @@ func TestHeadersUseClientProvidedOpenCodeIDs(t *testing.T) {
 	checks := map[string]string{
 		"Content-Type":       "application/json",
 		"Accept":             "text/event-stream",
-		"User-Agent":         "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
+		"User-Agent":         "opencode/1.18.31 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14",
 		"x-opencode-client":  "cli",
 		"x-opencode-project": "prj_test",
 		"x-opencode-session": "ses_client-provided",
@@ -91,48 +90,7 @@ func TestHeadersGenerateOpenCodeIDs(t *testing.T) {
 	}
 }
 
-func TestPrepareOpenCodeBodyKeepsClientFieldsAndAddsCompatibilityFields(t *testing.T) {
-	const body = `{"model":"mimo-v2.5-free","messages":[{"role":"user","content":"hello"}],"stream":false,"temperature":0.35,"top_p":0.8,"max_tokens":321,"stop":["END"]}`
-
-	prepared, err := prepareOpenCodeBody([]byte(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(prepared, &payload); err != nil {
-		t.Fatal(err)
-	}
-	for _, field := range []string{"temperature", "top_p", "max_tokens", "stop"} {
-		if _, ok := payload[field]; !ok {
-			t.Fatalf("prepared body dropped %s", field)
-		}
-	}
-	var stream bool
-	if err := json.Unmarshal(payload["stream"], &stream); err != nil || !stream {
-		t.Fatalf("stream = %s, want true", payload["stream"])
-	}
-	if got := string(payload["stream_options"]); got != `{"include_usage":true}` {
-		t.Fatalf("stream_options = %s", got)
-	}
-	if got := string(payload["tool_choice"]); got != `"none"` {
-		t.Fatalf("tool_choice = %s", got)
-	}
-
-	var tools []struct {
-		Function struct {
-			Name string `json:"name"`
-		} `json:"function"`
-	}
-	if err := json.Unmarshal(payload["tools"], &tools); err != nil {
-		t.Fatal(err)
-	}
-	if len(tools) != 2 || tools[0].Function.Name != "bash" || tools[1].Function.Name != "read" {
-		t.Fatalf("tools = %#v", tools)
-	}
-}
-
-func TestOpenCodeHeadersUseCurrentClientShape(t *testing.T) {
+func TestOpenCodeHeadersOmitProjectWithoutConfiguration(t *testing.T) {
 	client, err := New(config.Config{
 		UpstreamBaseURL: "https://opencode.ai/zen/v1",
 	})
@@ -142,15 +100,17 @@ func TestOpenCodeHeadersUseCurrentClientShape(t *testing.T) {
 
 	headers := client.Headers(HeaderInput{})
 	checks := map[string]string{
-		"Accept":             "*/*",
-		"User-Agent":         "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
-		"x-opencode-client":  "cli",
-		"x-opencode-project": "global",
+		"Accept":            "application/json",
+		"User-Agent":        "opencode/1.18.31 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14",
+		"x-opencode-client": "cli",
 	}
 	for name, want := range checks {
 		if got := headers.Get(name); got != want {
 			t.Fatalf("header %s = %q, want %q", name, got, want)
 		}
+	}
+	if got := headers.Get("x-opencode-project"); got != "" {
+		t.Fatalf("x-opencode-project = %q, want no default project", got)
 	}
 }
 
