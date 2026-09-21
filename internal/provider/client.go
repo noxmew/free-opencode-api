@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,7 @@ type Client struct {
 	modelsEndpoint    string
 	http              *http.Client
 	identity          HeaderIdentity
+	openCodeZen       bool
 }
 
 type HeaderIdentity struct {
@@ -54,6 +56,7 @@ func New(cfg config.Config) (*Client, error) {
 			UserAgent:         openCodeUserAgent,
 			OpenCodeProjectID: strings.TrimSpace(cfg.OpenCodeProjectID),
 		},
+		openCodeZen: isOpenCodeZenURL(cfg.UpstreamBaseURL),
 	}, nil
 }
 
@@ -70,6 +73,13 @@ func (c *Client) DoModels(ctx context.Context, input HeaderInput) (*http.Respons
 }
 
 func (c *Client) DoChat(ctx context.Context, body []byte, input HeaderInput) (*http.Response, error) {
+	if c.openCodeZen && needsChatCompatibility(body) {
+		var err error
+		body, err = prepareOpenCodeBody(body)
+		if err != nil {
+			return nil, err
+		}
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -106,13 +116,17 @@ func (c *Client) Headers(input HeaderInput) http.Header {
 		headers.Set("Content-Type", "application/json")
 	}
 	if headers.Get("Accept") == "" {
-		if input.Stream {
+		if c.openCodeZen {
+			headers.Set("Accept", "*/*")
+		} else if input.Stream {
 			headers.Set("Accept", "text/event-stream")
 		} else {
 			headers.Set("Accept", "application/json")
 		}
 	}
-	if headers.Get("User-Agent") == "" {
+	if c.openCodeZen || headers.Get("User-Agent") == "" {
+		// Zen's free Chat endpoint expects the upstream request to identify as
+		// OpenCode, including when a generic client sends its own User-Agent.
 		headers.Set("User-Agent", c.identity.UserAgent)
 	}
 	if headers.Get("x-opencode-client") == "" {
@@ -153,6 +167,101 @@ func isHopByHopHeader(name string) bool {
 	default:
 		return false
 	}
+}
+
+func isOpenCodeZenURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Hostname(), "opencode.ai") &&
+		strings.HasPrefix(strings.TrimRight(parsed.Path, "/"), "/zen/")
+}
+
+func needsChatCompatibility(body []byte) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil || raw == nil {
+		return true
+	}
+
+	var stream bool
+	if err := json.Unmarshal(raw["stream"], &stream); err != nil || !stream {
+		return true
+	}
+	if _, ok := raw["stream_options"]; !ok {
+		return true
+	}
+	return !hasTools(raw["tools"])
+}
+
+func prepareOpenCodeBody(body []byte) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	var raw map[string]json.RawMessage
+	if err := decoder.Decode(&raw); err != nil || raw == nil {
+		return nil, fmt.Errorf("upstream body must be a JSON object")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("upstream body must contain one JSON value")
+	}
+
+	raw["stream"] = json.RawMessage("true")
+	if _, ok := raw["stream_options"]; !ok {
+		raw["stream_options"] = json.RawMessage(`{"include_usage":true}`)
+	}
+
+	if !hasTools(raw["tools"]) {
+		raw["tools"] = mustJSON(openCodeToolMarkers())
+		if _, ok := raw["tool_choice"]; !ok {
+			raw["tool_choice"] = json.RawMessage(`"none"`)
+		}
+	}
+	return json.Marshal(raw)
+}
+
+func hasTools(raw json.RawMessage) bool {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false
+	}
+	var tools []json.RawMessage
+	return json.Unmarshal(raw, &tools) == nil && len(tools) > 0
+}
+
+func openCodeToolMarkers() []map[string]any {
+	return []map[string]any{
+		{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "bash",
+				"description": "OpenCode bash tool",
+				"parameters": map[string]any{
+					"type":                 "object",
+					"properties":           map[string]any{},
+					"additionalProperties": false,
+				},
+			},
+		},
+		{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "read",
+				"description": "OpenCode read tool",
+				"parameters": map[string]any{
+					"type":                 "object",
+					"properties":           map[string]any{},
+					"additionalProperties": false,
+				},
+			},
+		},
+	}
+}
+
+func mustJSON(value any) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
 }
 
 func sessionID(input HeaderInput) string {
