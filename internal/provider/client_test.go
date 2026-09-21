@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/rain/free-opencode-api/internal/config"
+	"github.com/noxmew/free-opencode-api/internal/config"
 )
 
 func TestHeadersUseClientProvidedOpenCodeIDs(t *testing.T) {

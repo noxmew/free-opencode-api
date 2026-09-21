@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rain/free-opencode-api/internal/config"
+	"github.com/noxmew/free-opencode-api/internal/config"
 )
 
 type Client struct {

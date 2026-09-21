@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rain/free-opencode-api/internal/config"
-	"github.com/rain/free-opencode-api/internal/provider"
+	"github.com/noxmew/free-opencode-api/internal/config"
+	"github.com/noxmew/free-opencode-api/internal/provider"
 )
 
 type Server struct {

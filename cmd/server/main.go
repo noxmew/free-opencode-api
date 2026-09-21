@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rain/free-opencode-api/internal/config"
-	"github.com/rain/free-opencode-api/internal/httpapi"
-	"github.com/rain/free-opencode-api/internal/provider"
+	"github.com/noxmew/free-opencode-api/internal/config"
+	"github.com/noxmew/free-opencode-api/internal/httpapi"
+	"github.com/noxmew/free-opencode-api/internal/provider"
 )
 
 func main() {
