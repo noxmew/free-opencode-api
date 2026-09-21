@@ -5,9 +5,5 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-    environment:
-      HTTP_PROXY: "${HTTP_PROXY:-}"
-      HTTPS_PROXY: "${HTTPS_PROXY:-}"
-      NO_PROXY: "${NO_PROXY:-}"
-      REQUEST_TIMEOUT: "${REQUEST_TIMEOUT:-5m}"
-      OPENCODE_PROJECT_ID: "${OPENCODE_PROJECT_ID:-global}"
+    env_file:
+      - .env
