@@ -24,8 +24,7 @@ curl http://localhost:8080/v1/chat/completions \
 ```bash
 curl -fsSL https://raw.githubusercontent.com/noxmew/free-opencode-api/main/docker-compose.yml -o docker-compose.yml
 curl -fsSL https://raw.githubusercontent.com/noxmew/free-opencode-api/main/.env.example -o .env
-docker compose pull
-docker compose up -d
+docker compose up -d --pull always
 ```
 
 ## 参考
