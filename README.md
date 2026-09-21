@@ -35,19 +35,6 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## Docker 部署
 
-一键部署：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/noxmew/free-opencode-api/main/deploy.sh | sh
-```
-
-脚本默认把文件下载到当前目录的 `free-opencode-api/`，首次运行会自动生成 `SERVICE_API_KEY`。也可以指定部署目录：
-
-```bash
-DEPLOY_DIR=/opt/free-opencode-api \
-  sh -c 'curl -fsSL https://raw.githubusercontent.com/noxmew/free-opencode-api/main/deploy.sh | sh'
-```
-
 手动部署：
 
 ```bash
