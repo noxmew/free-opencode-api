@@ -5,8 +5,7 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-    env_file:
-      - .env
     environment:
-      # Fill in one proxy URL when the upstream needs a proxy.
-      HTTP_PROXY: ""
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      REQUEST_TIMEOUT: "${REQUEST_TIMEOUT:-5m}"
+      OPENCODE_PROJECT_ID: "${OPENCODE_PROJECT_ID:-global}"
