@@ -26,6 +26,12 @@ curl -fsSL https://raw.githubusercontent.com/noxmew/free-opencode-api/main/docke
 docker compose up -d
 ```
 
+可选配置服务认证；不配置或留空时不校验认证：
+
+```bash
+SERVICE_API_KEY=your-key docker compose up -d
+```
+
 ## 参考
 
 - [OpenCode](https://github.com/anomalyco/opencode)

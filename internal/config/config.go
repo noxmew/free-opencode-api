@@ -10,6 +10,8 @@ import (
 type Config struct {
 	ListenAddr string
 
+	ServiceAPIKey string
+
 	UpstreamBaseURL string
 
 	RequestTimeout    time.Duration
@@ -24,6 +26,7 @@ const (
 func Load() (Config, error) {
 	c := Config{
 		ListenAddr:        defaultListenAddr,
+		ServiceAPIKey:     strings.TrimSpace(os.Getenv("SERVICE_API_KEY")),
 		UpstreamBaseURL:   defaultUpstreamBaseURL,
 		OpenCodeProjectID: strings.TrimSpace(os.Getenv("OPENCODE_PROJECT_ID")),
 		RequestTimeout:    5 * time.Minute,

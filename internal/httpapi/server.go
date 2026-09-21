@@ -79,6 +79,9 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
 	response, err := s.upstream.DoModels(ctx, provider.HeaderInput{Inbound: r.Header})
@@ -99,6 +102,9 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r) {
+		return
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "request body is unreadable", "invalid_request_error", "invalid_body", "")
@@ -134,6 +140,20 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer response.Body.Close()
 
 	s.writeUpstreamResponse(w, response, parsed.Stream)
+}
+
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request) bool {
+	if s.cfg.ServiceAPIKey == "" {
+		return true
+	}
+	value := strings.TrimSpace(r.Header.Get("Authorization"))
+	parts := strings.Fields(value)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || !secureEqual(parts[1], s.cfg.ServiceAPIKey) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="free-opencode-api"`)
+		writeAPIError(w, http.StatusUnauthorized, "authentication required", "authentication_error", "invalid_api_key", "")
+		return false
+	}
+	return true
 }
 
 func (s *Server) writeUpstreamResponse(w http.ResponseWriter, response *http.Response, stream bool) {
@@ -422,6 +442,17 @@ func writeAPIError(w http.ResponseWriter, status int, message, errorType, code, 
 		Code:    code,
 		Param:   param,
 	}})
+}
+
+func secureEqual(left, right string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	var different byte
+	for index := range left {
+		different |= left[index] ^ right[index]
+	}
+	return different == 0
 }
 
 func providerRequestID(r *http.Request) string {

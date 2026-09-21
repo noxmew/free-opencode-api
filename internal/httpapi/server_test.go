@@ -74,6 +74,30 @@ func TestChatCompletionForwardsOpenCodeHeaders(t *testing.T) {
 	}
 }
 
+func TestOptionalServiceAPIKey(t *testing.T) {
+	server := &Server{cfg: config.Config{}}
+	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	response := httptest.NewRecorder()
+	if !server.authorize(response, request) {
+		t.Fatal("empty service key should allow requests")
+	}
+
+	server.cfg.ServiceAPIKey = "service-secret"
+	response = httptest.NewRecorder()
+	if server.authorize(response, request) {
+		t.Fatal("missing service key should be rejected when configured")
+	}
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+
+	request.Header.Set("Authorization", "Bearer service-secret")
+	response = httptest.NewRecorder()
+	if !server.authorize(response, request) {
+		t.Fatal("valid service key should be accepted")
+	}
+}
+
 func TestChatCompletionForwardsSupportedFieldsVerbatim(t *testing.T) {
 	const requestBody = `{
         "model":"free-model",
