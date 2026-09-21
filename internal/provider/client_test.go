@@ -105,6 +105,10 @@ func TestPrepareOpenCodeBodyKeepsClientFieldsAndAddsCompatibilityFields(t *testi
 			t.Fatalf("prepared body dropped %s", field)
 		}
 	}
+	var model string
+	if err := json.Unmarshal(payload["model"], &model); err != nil || model != "mimo-v2.5-free" {
+		t.Fatalf("model = %q, want mimo-v2.5-free", model)
+	}
 	var stream bool
 	if err := json.Unmarshal(payload["stream"], &stream); err != nil || !stream {
 		t.Fatalf("stream = %s, want true", payload["stream"])
@@ -126,6 +130,27 @@ func TestPrepareOpenCodeBodyKeepsClientFieldsAndAddsCompatibilityFields(t *testi
 	}
 	if len(tools) != 2 || tools[0].Function.Name != "bash" || tools[1].Function.Name != "read" {
 		t.Fatalf("tools = %#v", tools)
+	}
+}
+
+func TestPrepareOpenCodeBodyAddsFreeSuffix(t *testing.T) {
+	const body = `{"model":"mimo-v2.5","messages":[{"role":"user","content":"hello"}]}`
+
+	prepared, err := prepareOpenCodeBody([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(prepared, &payload); err != nil {
+		t.Fatal(err)
+	}
+	var model string
+	if err := json.Unmarshal(payload["model"], &model); err != nil {
+		t.Fatal(err)
+	}
+	if model != "mimo-v2.5-free" {
+		t.Fatalf("model = %q, want mimo-v2.5-free", model)
 	}
 }
 

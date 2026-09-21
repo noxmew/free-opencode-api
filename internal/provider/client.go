@@ -137,6 +137,13 @@ func prepareOpenCodeBody(body []byte) ([]byte, error) {
 		return nil, fmt.Errorf("upstream body must contain one JSON value")
 	}
 
+	if modelRaw, ok := raw["model"]; ok {
+		var model string
+		if err := json.Unmarshal(modelRaw, &model); err == nil && model != "" && !strings.HasSuffix(model, "-free") {
+			raw["model"] = mustJSON(model + "-free")
+		}
+	}
+
 	raw["stream"] = json.RawMessage("true")
 	if _, ok := raw["stream_options"]; !ok {
 		raw["stream_options"] = json.RawMessage(`{"include_usage":true}`)
