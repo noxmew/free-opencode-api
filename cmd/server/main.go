@@ -40,7 +40,7 @@ func main() {
 
 	serverErrors := make(chan error, 1)
 	go func() {
-		logger.Info("server started", "addr", cfg.ListenAddr, "upstream_proxy", cfg.UpstreamProxy != "")
+		logger.Info("server started", "addr", cfg.ListenAddr)
 		serverErrors <- server.ListenAndServe()
 	}()
 

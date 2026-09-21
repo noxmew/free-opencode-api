@@ -165,10 +165,12 @@ func TestConfiguredProxyReceivesUpstreamRequest(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"chatcmpl_proxy","choices":[]}`))
 	}))
 	defer proxy.Close()
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("HTTPS_PROXY", proxy.URL)
+	t.Setenv("NO_PROXY", "")
 
 	client, err := New(config.Config{
 		UpstreamBaseURL: "http://upstream.invalid/v1",
-		UpstreamProxy:   proxy.URL,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -40,7 +40,7 @@ const openCodeClientName = "cli"
 const openCodeUserAgent = "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
 
 func New(cfg config.Config) (*Client, error) {
-	httpClient, err := newHTTPClient(cfg.UpstreamProxy)
+	httpClient, err := newHTTPClient()
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +272,7 @@ func cleanHeaderValue(value string) string {
 	return value
 }
 
-func newHTTPClient(proxyRaw string) (*http.Client, error) {
+func newHTTPClient() (*http.Client, error) {
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		ForceAttemptHTTP2:     true,
@@ -281,13 +281,6 @@ func newHTTPClient(proxyRaw string) (*http.Client, error) {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,
-	}
-	if proxyRaw != "" {
-		proxyURL, err := url.Parse(proxyRaw)
-		if err != nil || proxyURL.Host == "" || (proxyURL.Scheme != "http" && proxyURL.Scheme != "https") {
-			return nil, fmt.Errorf("UPSTREAM_PROXY must be an http or https URL")
-		}
-		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 	return &http.Client{Transport: transport}, nil
 }
