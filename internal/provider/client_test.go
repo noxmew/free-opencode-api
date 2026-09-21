@@ -3,9 +3,12 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/rain/free-opencode-api/internal/config"
@@ -185,5 +188,42 @@ func TestConfiguredProxyReceivesUpstreamRequest(t *testing.T) {
 	}
 	if !proxyCalled {
 		t.Fatal("configured proxy was not used")
+	}
+}
+
+func TestConfiguredProxyOpensNewConnectionPerRequest(t *testing.T) {
+	var connections atomic.Int32
+	proxy := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_proxy","choices":[]}`))
+	}))
+	proxy.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	proxy.Start()
+	defer proxy.Close()
+
+	t.Setenv("HTTP_PROXY", proxy.URL)
+
+	client, err := New(config.Config{
+		UpstreamBaseURL: "http://upstream.invalid/v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		response, err := client.DoChat(context.Background(), []byte(`{"model":"m","messages":[]}`), HeaderInput{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+	}
+
+	if got := connections.Load(); got < 2 {
+		t.Fatalf("proxy connections = %d, want a new connection for each request", got)
 	}
 }

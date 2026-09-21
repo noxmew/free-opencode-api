@@ -67,6 +67,7 @@ func (c *Client) DoModels(ctx context.Context, input HeaderInput) (*http.Respons
 	if err != nil {
 		return nil, err
 	}
+	request.Close = true
 	request.Header = c.Headers(input)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Authorization", "Bearer public")
@@ -85,6 +86,7 @@ func (c *Client) DoChat(ctx context.Context, body []byte, input HeaderInput) (*h
 	if err != nil {
 		return nil, err
 	}
+	request.Close = true
 	request.Header = c.Headers(input)
 	request.Header.Set("Authorization", "Bearer public")
 	return c.http.Do(request)
@@ -286,6 +288,7 @@ func newHTTPClient() (*http.Client, error) {
 	}
 	transport := &http.Transport{
 		Proxy:                 proxy,
+		DisableKeepAlives:     true,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   20,
