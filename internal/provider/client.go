@@ -91,6 +91,13 @@ func (c *Client) DoChat(ctx context.Context, body []byte, input HeaderInput) (*h
 }
 
 func (c *Client) DoResponses(ctx context.Context, body []byte, input HeaderInput) (*http.Response, error) {
+	if c.openCodeZen && needsResponsesCompatibility(body) {
+		var err error
+		body, err = prepareOpenCodeResponsesBody(body)
+		if err != nil {
+			return nil, err
+		}
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.responsesEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -125,7 +132,7 @@ func (c *Client) Headers(input HeaderInput) http.Header {
 		}
 	}
 	if c.openCodeZen || headers.Get("User-Agent") == "" {
-		// Zen's free Chat endpoint expects the upstream request to identify as
+		// Zen's free endpoints expect the upstream request to identify as
 		// OpenCode, including when a generic client sends its own User-Agent.
 		headers.Set("User-Agent", c.identity.UserAgent)
 	}
@@ -198,6 +205,24 @@ func needsChatCompatibility(body []byte) bool {
 	return !hasTools(raw["tools"])
 }
 
+// Zen's free Responses route expects the tool-bearing request shape generated
+// by OpenCode. Keep the compatibility fallback limited to requests with fewer
+// than the five core tools accepted by that route.
+const minOpenCodeResponsesTools = 5
+
+func needsResponsesCompatibility(body []byte) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil || raw == nil {
+		return true
+	}
+
+	var stream bool
+	if err := json.Unmarshal(raw["stream"], &stream); err != nil || !stream {
+		return true
+	}
+	return responseToolCount(raw["tools"]) < minOpenCodeResponsesTools
+}
+
 func prepareOpenCodeBody(body []byte) ([]byte, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	var raw map[string]json.RawMessage
@@ -221,6 +246,119 @@ func prepareOpenCodeBody(body []byte) ([]byte, error) {
 		}
 	}
 	return json.Marshal(raw)
+}
+
+func prepareOpenCodeResponsesBody(body []byte) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	var raw map[string]json.RawMessage
+	if err := decoder.Decode(&raw); err != nil || raw == nil {
+		return nil, fmt.Errorf("upstream body must be a JSON object")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("upstream body must contain one JSON value")
+	}
+
+	raw["stream"] = json.RawMessage("true")
+	tools := responseTools(raw["tools"])
+	for _, marker := range openCodeResponseToolMarkers() {
+		if len(tools) >= minOpenCodeResponsesTools {
+			break
+		}
+		if responseToolNameExists(tools, marker["name"].(string)) {
+			continue
+		}
+		tools = append(tools, mustJSON(marker))
+	}
+	raw["tools"] = mustJSON(tools)
+	return json.Marshal(raw)
+}
+
+func responseTools(raw json.RawMessage) []json.RawMessage {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil
+	}
+	var tools []json.RawMessage
+	if json.Unmarshal(raw, &tools) != nil {
+		return nil
+	}
+	return tools
+}
+
+func responseToolCount(raw json.RawMessage) int {
+	return len(responseTools(raw))
+}
+
+func responseToolNameExists(tools []json.RawMessage, name string) bool {
+	for _, raw := range tools {
+		var tool struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(raw, &tool) == nil && tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func openCodeResponseToolMarkers() []map[string]any {
+	return []map[string]any{
+		{
+			"type":        "function",
+			"name":        "bash",
+			"description": "OpenCode bash tool",
+			"parameters": map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+			"strict": false,
+		},
+		{
+			"type":        "function",
+			"name":        "edit",
+			"description": "OpenCode edit tool",
+			"parameters": map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+			"strict": false,
+		},
+		{
+			"type":        "function",
+			"name":        "glob",
+			"description": "OpenCode glob tool",
+			"parameters": map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+			"strict": false,
+		},
+		{
+			"type":        "function",
+			"name":        "grep",
+			"description": "OpenCode grep tool",
+			"parameters": map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+			"strict": false,
+		},
+		{
+			"type":        "function",
+			"name":        "read",
+			"description": "OpenCode read tool",
+			"parameters": map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+			"strict": false,
+		},
+	}
 }
 
 func hasTools(raw json.RawMessage) bool {

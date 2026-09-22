@@ -153,9 +153,8 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Responses requests are deliberately passed through unchanged. We only
-	// inspect stream to choose the upstream Accept header and forwarding mode;
-	// the original bytes are always sent to the provider.
+	// Keep the Responses API native at the HTTP layer. The provider client owns
+	// any OpenCode Zen compatibility fields needed by its free model route.
 	stream := responseRequestStream(body)
 	requestID := w.Header().Get("X-Request-ID")
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
@@ -178,7 +177,7 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	}
 	defer response.Body.Close()
 
-	s.writePassthroughResponse(w, response, stream)
+	s.writeResponsesResponse(w, response, stream)
 }
 
 func responseRequestStream(body []byte) bool {
@@ -287,6 +286,28 @@ func (s *Server) writePassthroughResponse(w http.ResponseWriter, response *http.
 			return
 		}
 	}
+}
+
+func (s *Server) writeResponsesResponse(w http.ResponseWriter, response *http.Response, stream bool) {
+	if !stream && response.StatusCode == http.StatusOK && isEventStream(response.Header.Get("Content-Type")) {
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			writeAPIError(w, http.StatusBadGateway, "invalid upstream response stream", "upstream_error", "invalid_upstream_stream", "")
+			return
+		}
+		converted, err := aggregateResponsesStream(body)
+		if err != nil {
+			writeAPIError(w, http.StatusBadGateway, "invalid upstream response stream", "upstream_error", "invalid_upstream_stream", "")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Del("Content-Length")
+		w.WriteHeader(response.StatusCode)
+		_, _ = w.Write(converted)
+		return
+	}
+
+	s.writePassthroughResponse(w, response, stream)
 }
 
 func isEventStream(contentType string) bool {
@@ -436,6 +457,54 @@ func aggregateChatCompletionStream(body []byte) ([]byte, error) {
 		result["usage"] = usage
 	}
 	return json.Marshal(result)
+}
+
+func aggregateResponsesStream(body []byte) ([]byte, error) {
+	var data []string
+	var completed json.RawMessage
+
+	consume := func() error {
+		if len(data) == 0 {
+			return nil
+		}
+		value := strings.TrimSpace(strings.Join(data, "\n"))
+		data = data[:0]
+		if value == "[DONE]" {
+			return nil
+		}
+
+		var event struct {
+			Type     string          `json:"type"`
+			Response json.RawMessage `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(value), &event); err != nil {
+			return err
+		}
+		if event.Type == "response.completed" && len(event.Response) > 0 {
+			completed = append(json.RawMessage(nil), event.Response...)
+		}
+		return nil
+	}
+
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		if len(line) == 0 {
+			if err := consume(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if bytes.HasPrefix(line, []byte("data:")) {
+			data = append(data, strings.TrimSpace(string(line[len("data:"):])))
+		}
+	}
+	if err := consume(); err != nil {
+		return nil, err
+	}
+	if len(completed) == 0 {
+		return nil, fmt.Errorf("upstream response stream contained no completed response")
+	}
+	return completed, nil
 }
 
 func parseChatRequest(body []byte) (chatRequest, error) {
