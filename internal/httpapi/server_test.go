@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -201,6 +202,40 @@ func TestResponsesStreamsSSEVerbatim(t *testing.T) {
 	}
 	if response.Body.String() != responseBody {
 		t.Fatalf("response body was rewritten: got %q, want %q", response.Body.String(), responseBody)
+	}
+}
+
+func TestResponsesClientReceivesDecodedGzipBody(t *testing.T) {
+	const responseBody = `{"id":"resp_gzip","object":"response","status":"completed","output":[]}`
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Accept-Encoding"); got != "gzip" {
+			t.Errorf("upstream accept-encoding = %q, want transport-managed gzip", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		writer := gzip.NewWriter(w)
+		_, _ = io.WriteString(writer, responseBody)
+		_ = writer.Close()
+	}))
+	defer upstream.Close()
+
+	server := newTestServer(t, upstream.URL+"/v1")
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"free-model","input":"hello"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	response := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("client content-encoding = %q, want decoded body", got)
+	}
+	if response.Body.String() != responseBody {
+		t.Fatalf("client body = %q, want %q", response.Body.String(), responseBody)
 	}
 }
 

@@ -506,7 +506,7 @@ func validateMessage(raw json.RawMessage) error {
 }
 
 func copyResponseHeaders(w http.ResponseWriter, headers http.Header) {
-	for _, name := range []string{"Content-Type", "Cache-Control", "Retry-After"} {
+	for _, name := range []string{"Content-Type", "Content-Encoding", "Cache-Control", "Retry-After"} {
 		for _, value := range headers.Values(name) {
 			w.Header().Add(name, value)
 		}

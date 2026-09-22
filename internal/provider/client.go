@@ -162,6 +162,10 @@ func (c *Client) Headers(input HeaderInput) http.Header {
 
 func isHopByHopHeader(name string) bool {
 	switch strings.ToLower(name) {
+	case "accept-encoding":
+		// Let the Go transport negotiate compression and decode it before the
+		// response is written back to the client.
+		return true
 	case "connection", "content-length", "host", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade":
 		return true
 	default:
