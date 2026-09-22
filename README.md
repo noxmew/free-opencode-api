@@ -8,6 +8,8 @@ go run ./cmd/server
 
 ## Chat Completions API
 
+客户端传入的模型名如果没有以 `-free` 结尾，转发到上游时会自动补上该后缀。
+
 ```bash
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \

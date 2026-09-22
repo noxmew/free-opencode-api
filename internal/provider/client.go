@@ -73,6 +73,7 @@ func (c *Client) DoModels(ctx context.Context, input HeaderInput) (*http.Respons
 }
 
 func (c *Client) DoChat(ctx context.Context, body []byte, input HeaderInput) (*http.Response, error) {
+	body = ensureFreeModel(body)
 	if c.openCodeZen && needsChatCompatibility(body) {
 		var err error
 		body, err = prepareOpenCodeBody(body)
@@ -91,6 +92,7 @@ func (c *Client) DoChat(ctx context.Context, body []byte, input HeaderInput) (*h
 }
 
 func (c *Client) DoResponses(ctx context.Context, body []byte, input HeaderInput) (*http.Response, error) {
+	body = ensureFreeModel(body)
 	if c.openCodeZen && needsResponsesCompatibility(body) {
 		var err error
 		body, err = prepareOpenCodeResponsesBody(body)
@@ -106,6 +108,35 @@ func (c *Client) DoResponses(ctx context.Context, body []byte, input HeaderInput
 	request.Header = c.Headers(input)
 	request.Header.Set("Authorization", "Bearer public")
 	return c.http.Do(request)
+}
+
+const freeModelSuffix = "-free"
+
+func ensureFreeModel(body []byte) []byte {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil || raw == nil {
+		return body
+	}
+
+	var model string
+	modelRaw, ok := raw["model"]
+	if !ok || json.Unmarshal(modelRaw, &model) != nil || model == "" {
+		return body
+	}
+	if strings.HasSuffix(model, freeModelSuffix) {
+		return body
+	}
+
+	updatedModel, err := json.Marshal(model + freeModelSuffix)
+	if err != nil {
+		return body
+	}
+	raw["model"] = updatedModel
+	updatedBody, err := json.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	return updatedBody
 }
 
 func (c *Client) Headers(input HeaderInput) http.Header {

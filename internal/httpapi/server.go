@@ -112,8 +112,8 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Keep body as the bytes received from the client. The parser only reads
-	// fields needed by the gateway; the provider receives the original JSON so
-	// supported options are not dropped, defaulted, or rewritten.
+	// fields needed by the gateway; the provider receives all client options
+	// and only applies its upstream-specific model/compatibility adjustments.
 	parsed, err := parseChatRequest(body)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request", "")
