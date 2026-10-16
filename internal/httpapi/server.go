@@ -99,7 +99,82 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer response.Body.Close()
-	s.writeUpstreamResponse(w, response, false)
+	if response.StatusCode != http.StatusOK {
+		s.writeUpstreamResponse(w, response, false)
+		return
+	}
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		s.logger.Error("upstream model response read failed", "error", err)
+		writeAPIError(w, http.StatusBadGateway, "invalid upstream model response", "upstream_error", "invalid_upstream_response", "")
+		return
+	}
+
+	filteredBody, filtered := filterFreeModels(body, s.cfg.StripFreeModelSuffix)
+	copyResponseHeaders(w, response.Header)
+	if filtered {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(response.StatusCode)
+	_, _ = w.Write(filteredBody)
+}
+
+const freeModelSuffix = "-free"
+
+func filterFreeModels(body []byte, stripSuffix bool) ([]byte, bool) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
+		return body, false
+	}
+
+	data, ok := payload["data"]
+	trimmedData := bytes.TrimSpace(data)
+	if !ok || len(trimmedData) == 0 || trimmedData[0] != '[' {
+		return body, false
+	}
+
+	var models []json.RawMessage
+	if err := json.Unmarshal(data, &models); err != nil {
+		return body, false
+	}
+	freeModels := make([]json.RawMessage, 0, len(models))
+	for _, modelJSON := range models {
+		var model map[string]json.RawMessage
+		if err := json.Unmarshal(modelJSON, &model); err != nil || model == nil {
+			continue
+		}
+		var id string
+		if err := json.Unmarshal(model["id"], &id); err != nil || !strings.HasSuffix(id, freeModelSuffix) {
+			continue
+		}
+		if stripSuffix {
+			trimmedID, err := json.Marshal(strings.TrimSuffix(id, freeModelSuffix))
+			if err != nil {
+				return body, false
+			}
+			model["id"] = trimmedID
+			modelJSON, err = json.Marshal(model)
+			if err != nil {
+				return body, false
+			}
+		}
+		freeModels = append(freeModels, modelJSON)
+	}
+
+	filteredData, err := json.Marshal(freeModels)
+	if err != nil {
+		return body, false
+	}
+	payload["data"] = filteredData
+	filteredBody, err := json.Marshal(payload)
+	if err != nil {
+		return body, false
+	}
+	return filteredBody, true
 }
 
 func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
