@@ -16,7 +16,7 @@ import (
 
 func TestMimoChatZenGatewayFlow(t *testing.T) {
 	server := newZenTestServer(t)
-	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"mimo-v2.5-free","messages":[{"role":"user","content":"Reply exactly: chat-ok"}]}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"mimo-v2.6-flash-free","messages":[{"role":"user","content":"Reply exactly: chat-ok"}]}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 
@@ -36,7 +36,7 @@ func TestMimoChatZenGatewayFlow(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("invalid response: %v; body = %s", err, response.Body.String())
 	}
-	if payload.Model != "mimo-v2.5-free" || len(payload.Choices) == 0 || !strings.Contains(payload.Choices[0].Message.Content, "chat-ok") {
+	if payload.Model != "mimo-v2.6-flash-free" || len(payload.Choices) == 0 || !strings.Contains(payload.Choices[0].Message.Content, "chat-ok") {
 		t.Fatalf("response = %s", response.Body.String())
 	}
 }

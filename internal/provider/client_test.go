@@ -22,8 +22,8 @@ func TestClientEnsuresFreeModelSuffix(t *testing.T) {
 		{
 			name:  "chat model without suffix",
 			path:  "/chat/completions",
-			body:  `{"model":"mimo-v2.5","messages":[]}`,
-			model: "mimo-v2.5-free",
+			body:  `{"model":"mimo-v2.6-flash","messages":[]}`,
+			model: "mimo-v2.6-flash-free",
 		},
 		{
 			name:  "responses model without suffix",
@@ -34,8 +34,8 @@ func TestClientEnsuresFreeModelSuffix(t *testing.T) {
 		{
 			name:  "chat model with suffix",
 			path:  "/chat/completions",
-			body:  `{"model":"mimo-v2.5-free","messages":[]}`,
-			model: "mimo-v2.5-free",
+			body:  `{"model":"mimo-v2.6-flash-free","messages":[]}`,
+			model: "mimo-v2.6-flash-free",
 		},
 		{
 			name:  "responses model with suffix",
@@ -95,5 +95,34 @@ func TestClientEnsuresFreeModelSuffix(t *testing.T) {
 				t.Errorf("forwarded model = %q, want %q", payload.Model, test.model)
 			}
 		})
+	}
+}
+
+func TestOpenCodeHeadersMatchModelRequest(t *testing.T) {
+	client, err := New(config.Config{
+		UpstreamBaseURL:   "https://opencode.ai/zen/v1",
+		OpenCodeProjectID: "prj_test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	headers := client.Headers(HeaderInput{Inbound: http.Header{
+		"X-Opencode-Session":    []string{"ses_current"},
+		"X-Opencode-Request-Id": []string{"msg_current"},
+	}})
+
+	want := map[string]string{
+		"User-Agent":         openCodeUserAgent,
+		"x-opencode-client":  openCodeClientName,
+		"x-opencode-session": "ses_current",
+		"x-opencode-request": "msg_current",
+		"x-opencode-project": "prj_test",
+		"Authorization":      "Bearer public",
+	}
+	for name, expected := range want {
+		if got := headers.Get(name); got != expected {
+			t.Errorf("%s = %q, want %q", name, got, expected)
+		}
 	}
 }

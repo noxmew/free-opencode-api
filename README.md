@@ -14,7 +14,7 @@ go run ./cmd/server
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "mimo-v2.5-free",
+    "model": "mimo-v2.6-flash-free",
     "messages": [{"role": "user", "content": "你好"}]
   }'
 ```

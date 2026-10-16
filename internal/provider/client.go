@@ -39,7 +39,7 @@ type HeaderInput struct {
 
 const openCodeClientName = "cli"
 
-const openCodeUserAgent = "opencode/1.18.31 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14"
+const openCodeUserAgent = "opencode/1.18.15 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
 
 func New(cfg config.Config) (*Client, error) {
 	httpClient, err := newHTTPClient()
@@ -163,22 +163,17 @@ func (c *Client) Headers(input HeaderInput) http.Header {
 		}
 	}
 	if c.openCodeZen || headers.Get("User-Agent") == "" {
-		// Zen's free endpoints expect the upstream request to identify as
-		// OpenCode, including when a generic client sends its own User-Agent.
+		// Match the User-Agent built by OpenCode's App.useragent().
 		headers.Set("User-Agent", c.identity.UserAgent)
 	}
-	if headers.Get("x-opencode-client") == "" {
+	if c.openCodeZen || headers.Get("x-opencode-client") == "" {
 		headers.Set("x-opencode-client", openCodeClientName)
 	}
 
-	if value := cleanHeaderValue(headers.Get("x-opencode-session")); value != "" {
-		headers.Set("x-opencode-session", value)
-	} else if value := cleanHeaderValue(headers.Get("x-session-id")); value != "" {
-		headers.Set("x-opencode-session", value)
-	} else {
-		headers.Set("x-opencode-session", sessionID(input))
-	}
+	headers.Set("x-opencode-session", sessionID(input))
 	if value := cleanHeaderValue(headers.Get("x-opencode-request")); value != "" {
+		headers.Set("x-opencode-request", value)
+	} else if value := cleanHeaderValue(headers.Get("x-opencode-request-id")); value != "" {
 		headers.Set("x-opencode-request", value)
 	} else {
 		headers.Set("x-opencode-request", requestID(input))
@@ -438,7 +433,7 @@ func mustJSON(value any) json.RawMessage {
 }
 
 func sessionID(input HeaderInput) string {
-	for _, name := range []string{"x-opencode-session", "x-session-id"} {
+	for _, name := range []string{"x-opencode-session-id", "x-session-id", "x-opencode-session"} {
 		if value := cleanHeaderValue(input.Inbound.Get(name)); value != "" {
 			return value
 		}
@@ -447,8 +442,10 @@ func sessionID(input HeaderInput) string {
 }
 
 func requestID(input HeaderInput) string {
-	if value := cleanHeaderValue(input.Inbound.Get("x-opencode-request")); value != "" {
-		return value
+	for _, name := range []string{"x-opencode-request", "x-opencode-request-id"} {
+		if value := cleanHeaderValue(input.Inbound.Get(name)); value != "" {
+			return value
+		}
 	}
 	return openCodeID("msg", false)
 }
