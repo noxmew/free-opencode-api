@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -39,7 +42,27 @@ type HeaderInput struct {
 
 const openCodeClientName = "cli"
 
-const openCodeUserAgent = "opencode/1.18.15 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
+const openCodeUserAgent = "opencode/latest/2.0.29/cli"
+
+//go:embed opencode_tools.json
+var openCodeToolsJSON []byte
+
+type openCodeToolDefinition struct {
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+var openCodeToolDefinitions = func() map[string]openCodeToolDefinition {
+	definitions := make(map[string]openCodeToolDefinition)
+	if err := json.Unmarshal(openCodeToolsJSON, &definitions); err != nil {
+		panic(fmt.Sprintf("invalid embedded OpenCode tool definitions: %v", err))
+	}
+	return definitions
+}()
+
+var openCodeCoreToolNames = []string{"shell", "edit", "glob", "grep", "read"}
+
+var canonicalOpenCodeSessionPattern = regexp.MustCompile(`^ses_[0-9a-f]{9}f[c-f][0-9a-f][0-9A-Za-z]{14}$`)
 
 func New(cfg config.Config) (*Client, error) {
 	httpClient, err := newHTTPClient()
@@ -74,7 +97,7 @@ func (c *Client) DoModels(ctx context.Context, input HeaderInput) (*http.Respons
 
 func (c *Client) DoChat(ctx context.Context, body []byte, input HeaderInput) (*http.Response, error) {
 	body = ensureFreeModel(body)
-	if c.openCodeZen && needsChatCompatibility(body) {
+	if c.openCodeZen {
 		var err error
 		body, err = prepareOpenCodeBody(body)
 		if err != nil {
@@ -93,7 +116,7 @@ func (c *Client) DoChat(ctx context.Context, body []byte, input HeaderInput) (*h
 
 func (c *Client) DoResponses(ctx context.Context, body []byte, input HeaderInput) (*http.Response, error) {
 	body = ensureFreeModel(body)
-	if c.openCodeZen && needsResponsesCompatibility(body) {
+	if c.openCodeZen {
 		var err error
 		body, err = prepareOpenCodeResponsesBody(body)
 		if err != nil {
@@ -155,7 +178,7 @@ func (c *Client) Headers(input HeaderInput) http.Header {
 	}
 	if headers.Get("Accept") == "" {
 		if c.openCodeZen {
-			headers.Set("Accept", "*/*")
+			headers.Set("Accept", "application/json, text/event-stream")
 		} else if input.Stream {
 			headers.Set("Accept", "text/event-stream")
 		} else {
@@ -170,18 +193,37 @@ func (c *Client) Headers(input HeaderInput) http.Header {
 		headers.Set("x-opencode-client", openCodeClientName)
 	}
 
-	headers.Set("x-opencode-session", sessionID(input))
-	if value := cleanHeaderValue(headers.Get("x-opencode-request")); value != "" {
-		headers.Set("x-opencode-request", value)
-	} else if value := cleanHeaderValue(headers.Get("x-opencode-request-id")); value != "" {
-		headers.Set("x-opencode-request", value)
+	if c.openCodeZen {
+		// Zen's free-tier gate requires matching session and affinity IDs, and
+		// rejects the request-correlation header used by older gateway clients.
+		session := zenSessionID(input)
+		headers.Set("x-opencode-session", session)
+		headers.Set("x-opencode-session-id", session)
+		headers.Set("x-session-affinity", session)
+		headers.Set("X-Session-Id", session)
+		headers.Del("x-opencode-request")
+		headers.Del("x-opencode-request-id")
 	} else {
-		headers.Set("x-opencode-request", requestID(input))
+		headers.Set("x-opencode-session", sessionID(input))
+		if value := cleanHeaderValue(headers.Get("x-opencode-request")); value != "" {
+			headers.Set("x-opencode-request", value)
+		} else if value := cleanHeaderValue(headers.Get("x-opencode-request-id")); value != "" {
+			headers.Set("x-opencode-request", value)
+		} else {
+			headers.Set("x-opencode-request", requestID(input))
+		}
 	}
 
 	projectID := cleanHeaderValue(headers.Get("x-opencode-project"))
 	if projectID == "" {
 		projectID = cleanHeaderValue(c.identity.OpenCodeProjectID)
+	}
+	if c.openCodeZen {
+		if projectID == "" {
+			projectID = "global"
+		}
+		projectHash := sha256.Sum256([]byte("opencode-project\x00" + projectID))
+		projectID = hex.EncodeToString(projectHash[:20])
 	}
 	if projectID != "" {
 		headers.Set("x-opencode-project", projectID)
@@ -215,221 +257,12 @@ func isOpenCodeZenURL(raw string) bool {
 		strings.HasPrefix(strings.TrimRight(parsed.Path, "/"), "/zen/")
 }
 
-func needsChatCompatibility(body []byte) bool {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil || raw == nil {
-		return true
-	}
-
-	var stream bool
-	if err := json.Unmarshal(raw["stream"], &stream); err != nil || !stream {
-		return true
-	}
-	if _, ok := raw["stream_options"]; !ok {
-		return true
-	}
-	return !hasTools(raw["tools"])
-}
-
-// Zen's free Responses route expects the tool-bearing request shape generated
-// by OpenCode. Keep the compatibility fallback limited to requests with fewer
-// than the five core tools accepted by that route.
-const minOpenCodeResponsesTools = 5
-
-func needsResponsesCompatibility(body []byte) bool {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil || raw == nil {
-		return true
-	}
-
-	var stream bool
-	if err := json.Unmarshal(raw["stream"], &stream); err != nil || !stream {
-		return true
-	}
-	return responseToolCount(raw["tools"]) < minOpenCodeResponsesTools
-}
-
 func prepareOpenCodeBody(body []byte) ([]byte, error) {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	var raw map[string]json.RawMessage
-	if err := decoder.Decode(&raw); err != nil || raw == nil {
-		return nil, fmt.Errorf("upstream body must be a JSON object")
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		return nil, fmt.Errorf("upstream body must contain one JSON value")
-	}
-
-	raw["stream"] = json.RawMessage("true")
-	if _, ok := raw["stream_options"]; !ok {
-		raw["stream_options"] = json.RawMessage(`{"include_usage":true}`)
-	}
-
-	if !hasTools(raw["tools"]) {
-		raw["tools"] = mustJSON(openCodeToolMarkers())
-		if _, ok := raw["tool_choice"]; !ok {
-			raw["tool_choice"] = json.RawMessage(`"none"`)
-		}
-	}
-	return json.Marshal(raw)
+	return prepareOpenCodeRequestBody(body, false)
 }
 
 func prepareOpenCodeResponsesBody(body []byte) ([]byte, error) {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	var raw map[string]json.RawMessage
-	if err := decoder.Decode(&raw); err != nil || raw == nil {
-		return nil, fmt.Errorf("upstream body must be a JSON object")
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		return nil, fmt.Errorf("upstream body must contain one JSON value")
-	}
-
-	raw["stream"] = json.RawMessage("true")
-	tools := responseTools(raw["tools"])
-	for _, marker := range openCodeResponseToolMarkers() {
-		if len(tools) >= minOpenCodeResponsesTools {
-			break
-		}
-		if responseToolNameExists(tools, marker["name"].(string)) {
-			continue
-		}
-		tools = append(tools, mustJSON(marker))
-	}
-	raw["tools"] = mustJSON(tools)
-	return json.Marshal(raw)
-}
-
-func responseTools(raw json.RawMessage) []json.RawMessage {
-	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil
-	}
-	var tools []json.RawMessage
-	if json.Unmarshal(raw, &tools) != nil {
-		return nil
-	}
-	return tools
-}
-
-func responseToolCount(raw json.RawMessage) int {
-	return len(responseTools(raw))
-}
-
-func responseToolNameExists(tools []json.RawMessage, name string) bool {
-	for _, raw := range tools {
-		var tool struct {
-			Name string `json:"name"`
-		}
-		if json.Unmarshal(raw, &tool) == nil && tool.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-func openCodeResponseToolMarkers() []map[string]any {
-	return []map[string]any{
-		{
-			"type":        "function",
-			"name":        "bash",
-			"description": "OpenCode bash tool",
-			"parameters": map[string]any{
-				"type":                 "object",
-				"properties":           map[string]any{},
-				"additionalProperties": false,
-			},
-			"strict": false,
-		},
-		{
-			"type":        "function",
-			"name":        "edit",
-			"description": "OpenCode edit tool",
-			"parameters": map[string]any{
-				"type":                 "object",
-				"properties":           map[string]any{},
-				"additionalProperties": false,
-			},
-			"strict": false,
-		},
-		{
-			"type":        "function",
-			"name":        "glob",
-			"description": "OpenCode glob tool",
-			"parameters": map[string]any{
-				"type":                 "object",
-				"properties":           map[string]any{},
-				"additionalProperties": false,
-			},
-			"strict": false,
-		},
-		{
-			"type":        "function",
-			"name":        "grep",
-			"description": "OpenCode grep tool",
-			"parameters": map[string]any{
-				"type":                 "object",
-				"properties":           map[string]any{},
-				"additionalProperties": false,
-			},
-			"strict": false,
-		},
-		{
-			"type":        "function",
-			"name":        "read",
-			"description": "OpenCode read tool",
-			"parameters": map[string]any{
-				"type":                 "object",
-				"properties":           map[string]any{},
-				"additionalProperties": false,
-			},
-			"strict": false,
-		},
-	}
-}
-
-func hasTools(raw json.RawMessage) bool {
-	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return false
-	}
-	var tools []json.RawMessage
-	return json.Unmarshal(raw, &tools) == nil && len(tools) > 0
-}
-
-func openCodeToolMarkers() []map[string]any {
-	return []map[string]any{
-		{
-			"type": "function",
-			"function": map[string]any{
-				"name":        "bash",
-				"description": "OpenCode bash tool",
-				"parameters": map[string]any{
-					"type":                 "object",
-					"properties":           map[string]any{},
-					"additionalProperties": false,
-				},
-			},
-		},
-		{
-			"type": "function",
-			"function": map[string]any{
-				"name":        "read",
-				"description": "OpenCode read tool",
-				"parameters": map[string]any{
-					"type":                 "object",
-					"properties":           map[string]any{},
-					"additionalProperties": false,
-				},
-			},
-		},
-	}
-}
-
-func mustJSON(value any) json.RawMessage {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	return encoded
+	return prepareOpenCodeRequestBody(body, true)
 }
 
 func sessionID(input HeaderInput) string {
