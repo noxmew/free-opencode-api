@@ -28,6 +28,8 @@ type Client struct {
 	http              *http.Client
 	identity          HeaderIdentity
 	openCodeZen       bool
+	retryDelay        time.Duration
+	maxRetries        int
 }
 
 type HeaderIdentity struct {
@@ -80,19 +82,16 @@ func New(cfg config.Config) (*Client, error) {
 			OpenCodeProjectID: strings.TrimSpace(cfg.OpenCodeProjectID),
 		},
 		openCodeZen: isOpenCodeZenURL(cfg.UpstreamBaseURL),
+		retryDelay:  defaultRetryDelay,
+		maxRetries:  defaultMaxRetries,
 	}, nil
 }
 
 func (c *Client) DoModels(ctx context.Context, input HeaderInput) (*http.Response, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.modelsEndpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Close = true
-	request.Header = c.Headers(input)
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer public")
-	return c.http.Do(request)
+	headers := c.Headers(input)
+	headers.Set("Accept", "application/json")
+	headers.Set("Authorization", "Bearer public")
+	return c.do(ctx, http.MethodGet, c.modelsEndpoint, nil, headers)
 }
 
 func (c *Client) DoChat(ctx context.Context, body []byte, input HeaderInput) (*http.Response, error) {
@@ -104,14 +103,9 @@ func (c *Client) DoChat(ctx context.Context, body []byte, input HeaderInput) (*h
 			return nil, err
 		}
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	request.Close = true
-	request.Header = c.Headers(input)
-	request.Header.Set("Authorization", "Bearer public")
-	return c.http.Do(request)
+	headers := c.Headers(input)
+	headers.Set("Authorization", "Bearer public")
+	return c.do(ctx, http.MethodPost, c.endpoint, body, headers)
 }
 
 func (c *Client) DoResponses(ctx context.Context, body []byte, input HeaderInput) (*http.Response, error) {
@@ -123,14 +117,70 @@ func (c *Client) DoResponses(ctx context.Context, body []byte, input HeaderInput
 			return nil, err
 		}
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.responsesEndpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	headers := c.Headers(input)
+	headers.Set("Authorization", "Bearer public")
+	return c.do(ctx, http.MethodPost, c.responsesEndpoint, body, headers)
+}
+
+const (
+	// defaultRetryDelay is the base pause before retrying an upstream request
+	// that was rate limited with HTTP 429. The actual pause grows linearly
+	// with the retry number: 1s, 2s, 3s, and so on.
+	defaultRetryDelay = time.Second
+
+	// defaultMaxRetries is how many additional attempts follow a 429 response.
+	defaultMaxRetries = 5
+
+	// retryBodyDrainLimit bounds how much of a discarded 429 body is read so
+	// the connection can be reused without buffering unbounded error payloads.
+	retryBodyDrainLimit = 64 * 1024
+)
+
+// do sends one upstream request. When the upstream answers with 429 Too Many
+// Requests, the request is retried up to c.maxRetries times. Each retry
+// pauses for c.retryDelay multiplied by the retry number (1s, 2s, 3s, ...).
+// The last 429 response is returned untouched for callers to forward.
+func (c *Client) do(ctx context.Context, method, endpoint string, body []byte, headers http.Header) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		request, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
+		if err != nil {
+			return nil, err
+		}
+		request.Close = true
+		request.Header = headers.Clone()
+
+		response, err := c.http.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		if response.StatusCode != http.StatusTooManyRequests || attempt >= c.maxRetries {
+			return response, nil
+		}
+
+		// The rate-limited response is not forwarded; drain and close it so the
+		// connection can be reused, then wait before the next attempt.
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, retryBodyDrainLimit))
+		_ = response.Body.Close()
+
+		if err := waitForRetry(ctx, time.Duration(attempt+1)*c.retryDelay); err != nil {
+			return nil, err
+		}
 	}
-	request.Close = true
-	request.Header = c.Headers(input)
-	request.Header.Set("Authorization", "Bearer public")
-	return c.http.Do(request)
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 const freeModelSuffix = "-free"
