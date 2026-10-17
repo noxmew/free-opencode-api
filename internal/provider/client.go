@@ -124,8 +124,8 @@ func (c *Client) DoResponses(ctx context.Context, body []byte, input HeaderInput
 
 const (
 	// defaultRetryDelay is the base pause before retrying an upstream request
-	// that was rate limited with HTTP 429. The actual pause grows linearly
-	// with the retry number: 1s, 2s, 3s, and so on.
+	// that was rate limited with HTTP 429. The pause doubles with each retry:
+	// 1s, 2s, 4s, 8s, 16s.
 	defaultRetryDelay = time.Second
 
 	// defaultMaxRetries is how many additional attempts follow a 429 response.
@@ -138,7 +138,7 @@ const (
 
 // do sends one upstream request. When the upstream answers with 429 Too Many
 // Requests, the request is retried up to c.maxRetries times. Each retry
-// pauses for c.retryDelay multiplied by the retry number (1s, 2s, 3s, ...).
+// pauses for c.retryDelay doubled per attempt (1s, 2s, 4s, 8s, ...).
 // The last 429 response is returned untouched for callers to forward.
 func (c *Client) do(ctx context.Context, method, endpoint string, body []byte, headers http.Header) (*http.Response, error) {
 	for attempt := 0; ; attempt++ {
@@ -166,7 +166,7 @@ func (c *Client) do(ctx context.Context, method, endpoint string, body []byte, h
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, retryBodyDrainLimit))
 		_ = response.Body.Close()
 
-		if err := waitForRetry(ctx, time.Duration(attempt+1)*c.retryDelay); err != nil {
+		if err := waitForRetry(ctx, time.Duration(1<<attempt)*c.retryDelay); err != nil {
 			return nil, err
 		}
 	}
