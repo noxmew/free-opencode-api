@@ -41,6 +41,48 @@ func TestChatCompletionsGatewayFlow(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsImageFlow(t *testing.T) {
+	server := newZenTestServer(t)
+	requestBody, err := json.Marshal(map[string]any{
+		"model": "deepseek-v4.1-flash",
+		"messages": []map[string]any{{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "text", "text": "Look at the image. Reply exactly: red"},
+				{"type": "image_url", "image_url": map[string]string{
+					"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAAMBAQAY3Y2wAAAAAElFTkSuQmCC",
+				}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(requestBody)))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid response: %v; body = %s", err, response.Body.String())
+	}
+	if payload.Model != "deepseek-v4.1-flash-free" || len(payload.Choices) == 0 || !strings.Contains(strings.ToLower(payload.Choices[0].Message.Content), "red") {
+		t.Fatalf("response = %s", response.Body.String())
+	}
+}
+
 const chatCompletionsToolTestModel = "mimo-v2.6-flash-free"
 
 func TestChatCompletionsToolCallFlow(t *testing.T) {

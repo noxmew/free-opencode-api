@@ -34,9 +34,10 @@ type chatMessage struct {
 	Content json.RawMessage `json:"content"`
 }
 
-type textContentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+type chatContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text"`
+	ImageURL json.RawMessage `json:"image_url"`
 }
 
 type errorEnvelope struct {
@@ -637,16 +638,33 @@ func validateMessage(raw json.RawMessage) error {
 	if content[0] != '[' {
 		return fmt.Errorf("message content must be text")
 	}
-	var parts []textContentPart
+	var parts []chatContentPart
 	if err := json.Unmarshal(content, &parts); err != nil {
 		return fmt.Errorf("message content must be text")
 	}
 	for _, part := range parts {
-		if part.Type != "text" {
-			return fmt.Errorf("message content only supports text parts")
+		switch part.Type {
+		case "text":
+		case "image_url":
+			if !validImageURL(part.ImageURL) {
+				return fmt.Errorf("image_url parts must contain a URL")
+			}
+		default:
+			return fmt.Errorf("message content only supports text and image_url parts")
 		}
 	}
 	return nil
+}
+
+func validImageURL(raw json.RawMessage) bool {
+	var object struct {
+		URL string `json:"url"`
+	}
+	if json.Unmarshal(raw, &object) == nil && strings.TrimSpace(object.URL) != "" {
+		return true
+	}
+	var url string
+	return json.Unmarshal(raw, &url) == nil && strings.TrimSpace(url) != ""
 }
 
 func copyResponseHeaders(w http.ResponseWriter, headers http.Header) {
