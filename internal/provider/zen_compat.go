@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+
+	"github.com/noxmew/free-opencode-api/internal/protocol"
 )
 
 const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -20,7 +22,7 @@ func mustJSON(value any) json.RawMessage {
 	return encoded
 }
 
-func prepareOpenCodeRequestBody(body []byte, responses bool) ([]byte, error) {
+func prepareOpenCodeRequestBody(body []byte, target protocol.Protocol) ([]byte, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	var raw map[string]json.RawMessage
 	if err := decoder.Decode(&raw); err != nil || raw == nil {
@@ -32,7 +34,8 @@ func prepareOpenCodeRequestBody(body []byte, responses bool) ([]byte, error) {
 	}
 
 	raw["stream"] = json.RawMessage("true")
-	if !responses {
+	switch target {
+	case protocol.Chat:
 		var options map[string]json.RawMessage
 		if json.Unmarshal(raw["stream_options"], &options) != nil || options == nil {
 			options = make(map[string]json.RawMessage)
@@ -42,6 +45,11 @@ func prepareOpenCodeRequestBody(body []byte, responses bool) ([]byte, error) {
 			options["include_usage"] = json.RawMessage("true")
 		}
 		raw["stream_options"] = mustJSON(options)
+	case protocol.Anthropic:
+		var maxTokens float64
+		if json.Unmarshal(raw["max_tokens"], &maxTokens) != nil || maxTokens <= 0 {
+			raw["max_tokens"] = json.RawMessage("4096")
+		}
 	}
 
 	tools, err := decodeOpenCodeTools(raw["tools"])
@@ -50,13 +58,13 @@ func prepareOpenCodeRequestBody(body []byte, responses bool) ([]byte, error) {
 	}
 	present := make(map[string]bool, len(tools))
 	for index, tool := range tools {
-		name := openCodeRequestToolName(tool, responses)
+		name := openCodeRequestToolName(tool, target)
 		if name == "" {
 			continue
 		}
 		present[name] = true
 		if _, known := openCodeToolDefinitions[name]; known {
-			tools[index], err = openCodeToolForProtocol(name, responses)
+			tools[index], err = openCodeToolForProtocol(name, target)
 			if err != nil {
 				return nil, err
 			}
@@ -66,7 +74,7 @@ func prepareOpenCodeRequestBody(body []byte, responses bool) ([]byte, error) {
 		if present[name] {
 			continue
 		}
-		tool, err := openCodeToolForProtocol(name, responses)
+		tool, err := openCodeToolForProtocol(name, target)
 		if err != nil {
 			return nil, err
 		}
@@ -88,7 +96,7 @@ func decodeOpenCodeTools(raw json.RawMessage) ([]json.RawMessage, error) {
 	return tools, nil
 }
 
-func openCodeRequestToolName(raw json.RawMessage, responses bool) string {
+func openCodeRequestToolName(raw json.RawMessage, target protocol.Protocol) string {
 	var tool struct {
 		Name     string `json:"name"`
 		Function struct {
@@ -98,33 +106,41 @@ func openCodeRequestToolName(raw json.RawMessage, responses bool) string {
 	if json.Unmarshal(raw, &tool) != nil {
 		return ""
 	}
-	if responses {
-		return tool.Name
+	if target == protocol.Chat {
+		return tool.Function.Name
 	}
-	return tool.Function.Name
+	return tool.Name
 }
 
-func openCodeToolForProtocol(name string, responses bool) (json.RawMessage, error) {
+func openCodeToolForProtocol(name string, target protocol.Protocol) (json.RawMessage, error) {
 	definition, ok := openCodeToolDefinitions[name]
 	if !ok {
 		return nil, fmt.Errorf("missing OpenCode tool definition %q", name)
 	}
-	if responses {
+	switch target {
+	case protocol.Responses:
 		return json.Marshal(map[string]any{
 			"type":        "function",
 			"name":        name,
 			"description": definition.Description,
 			"parameters":  definition.Parameters,
 		})
+	case protocol.Anthropic:
+		return json.Marshal(map[string]any{
+			"name":         name,
+			"description":  definition.Description,
+			"input_schema": definition.Parameters,
+		})
+	default:
+		return json.Marshal(map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        name,
+				"description": definition.Description,
+				"parameters":  definition.Parameters,
+			},
+		})
 	}
-	return json.Marshal(map[string]any{
-		"type": "function",
-		"function": map[string]any{
-			"name":        name,
-			"description": definition.Description,
-			"parameters":  definition.Parameters,
-		},
-	})
 }
 
 func zenSessionID(input HeaderInput) string {

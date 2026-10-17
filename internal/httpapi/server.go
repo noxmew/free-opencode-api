@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/noxmew/free-opencode-api/internal/config"
+	"github.com/noxmew/free-opencode-api/internal/protocol"
 	"github.com/noxmew/free-opencode-api/internal/provider"
 )
 
@@ -228,16 +230,30 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "request body is unreadable", "invalid_request_error", "invalid_body", "")
 		return
 	}
+	meta, err := protocol.ResponsesRequestMeta(body)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request", "")
+		return
+	}
+	target := s.upstream.ProtocolForModel(r.Context(), meta.Model)
+	upstreamBody := body
+	switch target {
+	case protocol.Chat:
+		upstreamBody, err = protocol.ResponsesToChat(body)
+	case protocol.Anthropic:
+		upstreamBody, err = protocol.ResponsesToAnthropic(body)
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request", "")
+		return
+	}
 
-	// Keep the Responses API native at the HTTP layer. The provider client owns
-	// any OpenCode Zen compatibility fields needed by its free model route.
-	stream := responseRequestStream(body)
 	requestID := w.Header().Get("X-Request-ID")
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
-	response, err := s.upstream.DoResponses(ctx, body, provider.HeaderInput{
+	response, err := s.upstream.DoProtocol(ctx, target, upstreamBody, provider.HeaderInput{
 		Inbound: r.Header,
-		Stream:  stream,
+		Stream:  meta.Stream,
 	})
 	if err != nil {
 		if r.Context().Err() != nil {
@@ -247,23 +263,21 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusGatewayTimeout, "upstream request timed out", "timeout_error", "upstream_timeout", "")
 			return
 		}
-		s.logger.Error("upstream responses request failed", "request_id", requestID, "error", err)
+		s.logger.Error("upstream responses request failed", "request_id", requestID, "protocol", target.String(), "error", err)
 		writeAPIError(w, http.StatusBadGateway, "upstream request failed", "upstream_error", "upstream_request_failed", "")
 		return
 	}
 	defer response.Body.Close()
 
-	s.writeResponsesResponse(w, response, stream)
-}
-
-func responseRequestStream(body []byte) bool {
-	var request struct {
-		Stream bool `json:"stream"`
+	toolTypes := protocol.ResponsesToolTypes(body)
+	switch target {
+	case protocol.Chat:
+		s.writeChatAsResponses(w, response, meta.Stream, meta.Model, toolTypes)
+	case protocol.Anthropic:
+		s.writeAnthropicAsResponses(w, response, meta.Stream, meta.Model, toolTypes)
+	default:
+		s.writeResponsesResponse(w, response, meta.Stream)
 	}
-	if err := json.Unmarshal(body, &request); err != nil {
-		return false
-	}
-	return request.Stream
 }
 
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) bool {
@@ -386,6 +400,177 @@ func (s *Server) writeResponsesResponse(w http.ResponseWriter, response *http.Re
 	s.writePassthroughResponse(w, response, stream)
 }
 
+func (s *Server) writeChatAsResponses(w http.ResponseWriter, response *http.Response, stream bool, model string, toolTypes map[string]string) {
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		s.writeConvertedUpstreamError(w, response)
+		return
+	}
+	if !stream {
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			writeAPIError(w, http.StatusBadGateway, "invalid upstream response", "upstream_error", "invalid_upstream_response", "")
+			return
+		}
+		completion, err := chatCompletionJSON(body, response.Header.Get("Content-Type"))
+		if err != nil {
+			writeAPIError(w, http.StatusBadGateway, err.Error(), "upstream_error", "invalid_upstream_response", "")
+			return
+		}
+		converted, err := protocol.ChatCompletionToResponses(completion, protocol.NewResponseID(), toolTypes)
+		if err != nil {
+			writeAPIError(w, http.StatusBadGateway, err.Error(), "upstream_error", "invalid_upstream_response", "")
+			return
+		}
+		writeJSON(w, http.StatusOK, converted)
+		return
+	}
+
+	streamWriter := protocol.NewResponsesStream(w, responseFlusher(w), protocol.NewResponseID(), model)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	if err := streamWriter.Begin(); err != nil {
+		return
+	}
+	buffered := bufio.NewReaderSize(response.Body, 64*1024)
+	prefix, _ := buffered.Peek(5)
+	if isEventStream(response.Header.Get("Content-Type")) || bytes.HasPrefix(bytes.TrimSpace(prefix), []byte("data:")) {
+		if err := protocol.StreamChatToResponses(buffered, streamWriter, model, toolTypes); err != nil {
+			_ = streamWriter.Fail(err.Error())
+		}
+		return
+	}
+	body, err := io.ReadAll(buffered)
+	if err != nil {
+		_ = streamWriter.Fail("invalid upstream response")
+		return
+	}
+	completion, err := chatCompletionJSON(body, response.Header.Get("Content-Type"))
+	if err != nil {
+		_ = streamWriter.Fail(err.Error())
+		return
+	}
+	converted, err := protocol.ChatCompletionToResponses(completion, streamWriter.ID(), toolTypes)
+	if err != nil {
+		_ = streamWriter.Fail(err.Error())
+		return
+	}
+	_ = streamWriter.Complete(converted)
+}
+
+func (s *Server) writeAnthropicAsResponses(w http.ResponseWriter, response *http.Response, stream bool, model string, toolTypes map[string]string) {
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		s.writeConvertedUpstreamError(w, response)
+		return
+	}
+	if !stream {
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			writeAPIError(w, http.StatusBadGateway, "invalid upstream response", "upstream_error", "invalid_upstream_response", "")
+			return
+		}
+		message, err := anthropicMessageJSON(body, response.Header.Get("Content-Type"))
+		if err != nil {
+			writeAPIError(w, http.StatusBadGateway, err.Error(), "upstream_error", "invalid_upstream_response", "")
+			return
+		}
+		converted, err := protocol.AnthropicMessageToResponses(message, protocol.NewResponseID(), toolTypes)
+		if err != nil {
+			writeAPIError(w, http.StatusBadGateway, err.Error(), "upstream_error", "invalid_upstream_response", "")
+			return
+		}
+		writeJSON(w, http.StatusOK, converted)
+		return
+	}
+
+	streamWriter := protocol.NewResponsesStream(w, responseFlusher(w), protocol.NewResponseID(), model)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	if err := streamWriter.Begin(); err != nil {
+		return
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		_ = streamWriter.Fail("invalid upstream response")
+		return
+	}
+	message, err := anthropicMessageJSON(body, response.Header.Get("Content-Type"))
+	if err != nil {
+		_ = streamWriter.Fail(err.Error())
+		return
+	}
+	converted, err := protocol.AnthropicMessageToResponses(message, streamWriter.ID(), toolTypes)
+	if err != nil {
+		_ = streamWriter.Fail(err.Error())
+		return
+	}
+	_ = streamWriter.Complete(converted)
+}
+
+func (s *Server) writeConvertedUpstreamError(w http.ResponseWriter, response *http.Response) {
+	body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	message := strings.TrimSpace(string(body))
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &envelope) == nil {
+		if strings.TrimSpace(envelope.Error.Message) != "" {
+			message = strings.TrimSpace(envelope.Error.Message)
+		} else if strings.TrimSpace(envelope.Message) != "" {
+			message = strings.TrimSpace(envelope.Message)
+		}
+	}
+	if message == "" {
+		message = "upstream request failed"
+	}
+	status := response.StatusCode
+	if status < 400 {
+		status = http.StatusBadGateway
+	}
+	writeAPIError(w, status, message, "upstream_error", "upstream_request_failed", "")
+}
+
+func chatCompletionJSON(body []byte, contentType string) ([]byte, error) {
+	if isEventStream(contentType) || looksLikeSSE(body) {
+		return aggregateChatCompletionStream(body)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(body, &object); err != nil {
+		return nil, fmt.Errorf("invalid upstream chat response")
+	}
+	return body, nil
+}
+
+func anthropicMessageJSON(body []byte, contentType string) ([]byte, error) {
+	if isEventStream(contentType) || looksLikeSSE(body) {
+		return protocol.AggregateAnthropicStream(body)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(body, &object); err != nil {
+		return nil, fmt.Errorf("invalid upstream anthropic response")
+	}
+	return body, nil
+}
+
+func looksLikeSSE(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	return bytes.HasPrefix(trimmed, []byte("data:")) || bytes.Contains(trimmed, []byte("\ndata:")) || bytes.Contains(trimmed, []byte("\r\ndata:"))
+}
+
+func responseFlusher(w http.ResponseWriter) func() {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return func() {}
+	}
+	return flusher.Flush
+}
+
 func isEventStream(contentType string) bool {
 	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
 }
@@ -395,6 +580,14 @@ type completionChoice struct {
 	content      strings.Builder
 	reasoning    strings.Builder
 	finishReason *string
+	toolCalls    map[int]*completionToolCall
+}
+
+type completionToolCall struct {
+	id        string
+	callType  string
+	name      strings.Builder
+	arguments strings.Builder
 }
 
 type completionChunk struct {
@@ -408,6 +601,15 @@ type completionChunk struct {
 			Content          *string `json:"content"`
 			Reasoning        *string `json:"reasoning"`
 			ReasoningContent *string `json:"reasoning_content"`
+			ToolCalls        []struct {
+				Index    *int   `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -450,8 +652,11 @@ func aggregateChatCompletionStream(body []byte) ([]byte, error) {
 		for _, item := range chunk.Choices {
 			choice := choices[item.Index]
 			if choice == nil {
-				choice = &completionChoice{}
+				choice = &completionChoice{toolCalls: make(map[int]*completionToolCall)}
 				choices[item.Index] = choice
+			}
+			if choice.toolCalls == nil {
+				choice.toolCalls = make(map[int]*completionToolCall)
 			}
 			if choice.role == "" {
 				choice.role = item.Delta.Role
@@ -464,6 +669,25 @@ func aggregateChatCompletionStream(body []byte) ([]byte, error) {
 			}
 			if item.Delta.ReasoningContent != nil {
 				choice.reasoning.WriteString(*item.Delta.ReasoningContent)
+			}
+			for _, toolCall := range item.Delta.ToolCalls {
+				index := 0
+				if toolCall.Index != nil {
+					index = *toolCall.Index
+				}
+				state := choice.toolCalls[index]
+				if state == nil {
+					state = &completionToolCall{}
+					choice.toolCalls[index] = state
+				}
+				if toolCall.ID != "" {
+					state.id = toolCall.ID
+				}
+				if toolCall.Type != "" {
+					state.callType = toolCall.Type
+				}
+				state.name.WriteString(toolCall.Function.Name)
+				state.arguments.WriteString(toolCall.Function.Arguments)
 			}
 			if item.FinishReason != nil {
 				finishReason := *item.FinishReason
@@ -511,6 +735,33 @@ func aggregateChatCompletionStream(body []byte) ([]byte, error) {
 		if reasoning := choice.reasoning.String(); reasoning != "" {
 			message["reasoning_content"] = reasoning
 		}
+		if len(choice.toolCalls) > 0 {
+			indices := make([]int, 0, len(choice.toolCalls))
+			for toolIndex := range choice.toolCalls {
+				indices = append(indices, toolIndex)
+			}
+			sort.Ints(indices)
+			toolCalls := make([]any, 0, len(indices))
+			for _, toolIndex := range indices {
+				state := choice.toolCalls[toolIndex]
+				callType := state.callType
+				if callType == "" {
+					callType = "function"
+				}
+				toolCalls = append(toolCalls, map[string]any{
+					"id":   state.id,
+					"type": callType,
+					"function": map[string]any{
+						"name":      state.name.String(),
+						"arguments": state.arguments.String(),
+					},
+				})
+			}
+			message["tool_calls"] = toolCalls
+			if choice.content.Len() == 0 {
+				message["content"] = nil
+			}
+		}
 		var finishReason any
 		if choice.finishReason != nil {
 			finishReason = *choice.finishReason
@@ -556,7 +807,7 @@ func aggregateResponsesStream(body []byte) ([]byte, error) {
 		if err := json.Unmarshal([]byte(value), &event); err != nil {
 			return err
 		}
-		if event.Type == "response.completed" && len(event.Response) > 0 {
+		if (event.Type == "response.completed" || event.Type == "response.incomplete" || event.Type == "response.failed") && len(event.Response) > 0 {
 			completed = append(json.RawMessage(nil), event.Response...)
 		}
 		return nil
@@ -646,6 +897,9 @@ func validateMessage(raw json.RawMessage) error {
 		switch part.Type {
 		case "text":
 		case "image_url":
+			if message.Role == "tool" {
+				return fmt.Errorf("tool message content only supports text")
+			}
 			if !validImageURL(part.ImageURL) {
 				return fmt.Errorf("image_url parts must contain a URL")
 			}

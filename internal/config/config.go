@@ -14,6 +14,7 @@ type Config struct {
 	ServiceAPIKey string
 
 	UpstreamBaseURL string
+	ModelCatalogURL string
 
 	RequestTimeout       time.Duration
 	OpenCodeProjectID    string
@@ -23,6 +24,7 @@ type Config struct {
 const (
 	defaultListenAddr      = ":8080"
 	defaultUpstreamBaseURL = "https://opencode.ai/zen/v1"
+	defaultModelCatalogURL = "https://models.opencode.ai/api.json"
 )
 
 func Load() (Config, error) {
@@ -30,8 +32,13 @@ func Load() (Config, error) {
 		ListenAddr:        defaultListenAddr,
 		ServiceAPIKey:     strings.TrimSpace(os.Getenv("SERVICE_API_KEY")),
 		UpstreamBaseURL:   defaultUpstreamBaseURL,
+		ModelCatalogURL:   defaultModelCatalogURL,
 		OpenCodeProjectID: strings.TrimSpace(os.Getenv("OPENCODE_PROJECT_ID")),
 		RequestTimeout:    5 * time.Minute,
+	}
+
+	if value := strings.TrimSpace(os.Getenv("MODEL_CATALOG_URL")); value != "" {
+		c.ModelCatalogURL = value
 	}
 
 	var err error

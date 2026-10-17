@@ -19,17 +19,21 @@ import (
 	"time"
 
 	"github.com/noxmew/free-opencode-api/internal/config"
+	"github.com/noxmew/free-opencode-api/internal/protocol"
 )
 
 type Client struct {
-	endpoint          string
-	responsesEndpoint string
-	modelsEndpoint    string
-	http              *http.Client
-	identity          HeaderIdentity
-	openCodeZen       bool
-	retryDelay        time.Duration
-	maxRetries        int
+	endpoints        map[protocol.Protocol]string
+	modelsEndpoint   string
+	http             *http.Client
+	identity         HeaderIdentity
+	openCodeZen      bool
+	retryDelay       time.Duration
+	maxRetries       int
+	catalogURL       string
+	protocolMu       sync.RWMutex
+	protocols        map[string]protocol.Protocol
+	protocolsExpires time.Time
 }
 
 type HeaderIdentity struct {
@@ -73,17 +77,23 @@ func New(cfg config.Config) (*Client, error) {
 	}
 	baseURL := strings.TrimRight(cfg.UpstreamBaseURL, "/")
 	return &Client{
-		endpoint:          baseURL + "/chat/completions",
-		responsesEndpoint: baseURL + "/responses",
-		modelsEndpoint:    baseURL + "/models",
-		http:              httpClient,
+		endpoints: map[protocol.Protocol]string{
+			protocol.Chat:      baseURL + "/chat/completions",
+			protocol.Responses: baseURL + "/responses",
+			protocol.Anthropic: baseURL + "/messages",
+		},
+		modelsEndpoint: baseURL + "/models",
+		http:           httpClient,
 		identity: HeaderIdentity{
 			UserAgent:         openCodeUserAgent,
 			OpenCodeProjectID: strings.TrimSpace(cfg.OpenCodeProjectID),
 		},
-		openCodeZen: isOpenCodeZenURL(cfg.UpstreamBaseURL),
-		retryDelay:  defaultRetryDelay,
-		maxRetries:  defaultMaxRetries,
+		openCodeZen:      isOpenCodeZenURL(cfg.UpstreamBaseURL),
+		retryDelay:       defaultRetryDelay,
+		maxRetries:       defaultMaxRetries,
+		catalogURL:       modelCatalogURL(cfg.ModelCatalogURL),
+		protocols:        make(map[string]protocol.Protocol),
+		protocolsExpires: time.Time{},
 	}, nil
 }
 
@@ -95,31 +105,39 @@ func (c *Client) DoModels(ctx context.Context, input HeaderInput) (*http.Respons
 }
 
 func (c *Client) DoChat(ctx context.Context, body []byte, input HeaderInput) (*http.Response, error) {
-	body = ensureFreeModel(body)
-	if c.openCodeZen {
-		var err error
-		body, err = prepareOpenCodeBody(body)
-		if err != nil {
-			return nil, err
-		}
-	}
-	headers := c.Headers(input)
-	headers.Set("Authorization", "Bearer public")
-	return c.do(ctx, http.MethodPost, c.endpoint, body, headers)
+	return c.DoProtocol(ctx, protocol.Chat, body, input)
 }
 
 func (c *Client) DoResponses(ctx context.Context, body []byte, input HeaderInput) (*http.Response, error) {
+	return c.DoProtocol(ctx, protocol.Responses, body, input)
+}
+
+func (c *Client) DoProtocol(ctx context.Context, target protocol.Protocol, body []byte, input HeaderInput) (*http.Response, error) {
+	if !target.Valid() {
+		return nil, fmt.Errorf("unsupported upstream protocol %q", target)
+	}
 	body = ensureFreeModel(body)
 	if c.openCodeZen {
 		var err error
-		body, err = prepareOpenCodeResponsesBody(body)
+		body, err = prepareOpenCodeBodyForProtocol(body, target)
 		if err != nil {
 			return nil, err
 		}
 	}
 	headers := c.Headers(input)
-	headers.Set("Authorization", "Bearer public")
-	return c.do(ctx, http.MethodPost, c.responsesEndpoint, body, headers)
+	if target == protocol.Anthropic {
+		headers.Del("Authorization")
+		headers.Set("x-api-key", "public")
+		headers.Set("anthropic-version", "2023-06-01")
+		headers.Set("anthropic-beta", "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14")
+	} else {
+		headers.Set("Authorization", "Bearer public")
+	}
+	endpoint := c.endpoints[target]
+	if endpoint == "" {
+		return nil, fmt.Errorf("missing upstream endpoint for protocol %q", target)
+	}
+	return c.do(ctx, http.MethodPost, endpoint, body, headers)
 }
 
 const (
@@ -307,12 +325,8 @@ func isOpenCodeZenURL(raw string) bool {
 		strings.HasPrefix(strings.TrimRight(parsed.Path, "/"), "/zen/")
 }
 
-func prepareOpenCodeBody(body []byte) ([]byte, error) {
-	return prepareOpenCodeRequestBody(body, false)
-}
-
-func prepareOpenCodeResponsesBody(body []byte) ([]byte, error) {
-	return prepareOpenCodeRequestBody(body, true)
+func prepareOpenCodeBodyForProtocol(body []byte, target protocol.Protocol) ([]byte, error) {
+	return prepareOpenCodeRequestBody(body, target)
 }
 
 func sessionID(input HeaderInput) string {
